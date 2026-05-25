@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -144,6 +146,22 @@ class FinalTrainingSplitTests(unittest.TestCase):
 
 
 class KMIASmokeTests(unittest.TestCase):
+    def test_predictor_smoke_entrypoint_exits_zero_with_metrics(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+
+        result = subprocess.run(
+            [sys.executable, "predictor.py", "--smoke"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Smoke metrics:", result.stdout)
+        self.assertIn("'cal'", result.stdout)
+        self.assertIn("'test'", result.stdout)
+
     def test_run_kmia_smoke_test_returns_cal_and_test_metrics(self) -> None:
         metrics = run_kmia_smoke_test(DATA_PATH, task_type="CPU")
 
