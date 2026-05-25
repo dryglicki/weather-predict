@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -150,6 +151,13 @@ class KMIASmokeTests(unittest.TestCase):
             self.assertIn("coverage_90", block_metrics)
             self.assertIn("width_90", block_metrics)
             self.assertIn("crossing_rate_after_repair", block_metrics)
+            self.assertTrue(math.isfinite(block_metrics["mean_pinball_loss"]))
+            self.assertGreaterEqual(block_metrics["mean_pinball_loss"], 0.0)
+            self.assertGreaterEqual(block_metrics["coverage_90"], 0.0)
+            self.assertLessEqual(block_metrics["coverage_90"], 1.0)
+            self.assertTrue(math.isfinite(block_metrics["width_90"]))
+            self.assertGreaterEqual(block_metrics["width_90"], 0.0)
+            self.assertEqual(block_metrics["crossing_rate_after_repair"], 0.0)
 
 
 if __name__ == "__main__":
