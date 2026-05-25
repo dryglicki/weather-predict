@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -1233,6 +1234,11 @@ def run_phase(
 
 
 if __name__ == "__main__":
+    if "--smoke" in sys.argv:
+        smoke_metrics = run_kmia_smoke_test("kalshiTraining_KMIA.dat", task_type="CPU")
+        print("Smoke metrics:", smoke_metrics)
+        raise SystemExit(0)
+
     df = load_kmia_training_data("kalshiTraining_KMIA.dat")
     dataset_cfg = build_kmia_dataset_config()
     block_cfg = build_default_kmia_block_split_config(df)

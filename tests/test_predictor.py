@@ -76,6 +76,8 @@ class KMIATrainingDataTests(unittest.TestCase):
         self.assertIn('load_kmia_training_data("kalshiTraining_KMIA.dat")', source)
         self.assertIn("dataset_cfg = build_kmia_dataset_config()", source)
         self.assertIn("block_cfg = build_default_kmia_block_split_config(df)", source)
+        self.assertIn('if "--smoke" in sys.argv:', source)
+        self.assertIn("run_kmia_smoke_test(", source)
         self.assertNotIn('pd.read_parquet("station_temperature_features.parquet")', source)
 
 
