@@ -1140,6 +1140,58 @@ def build_phase2_config_from_phase1(phase1_cfg: QuantileModelConfig) -> Quantile
 # Example usage
 # =============================================================================
 
+def run_kmia_smoke_test(
+    data_path: str | Path = "kalshiTraining_KMIA.dat",
+    task_type: str = "CPU",
+) -> Dict[str, Dict[str, float]]:
+    """
+    Run a small KMIA training smoke test.
+
+    Parameters
+    ----------
+    data_path : str or pathlib.Path, default="kalshiTraining_KMIA.dat"
+        Path to the KMIA training CSV file.
+    task_type : str, default="CPU"
+        CatBoost task type used for the smoke model.
+
+    Returns
+    -------
+    Dict[str, Dict[str, float]]
+        Metrics keyed by block name: ``cal`` and ``test``.
+    """
+    df = load_kmia_training_data(data_path)
+    dataset_cfg = build_kmia_dataset_config()
+    block_cfg = build_default_kmia_block_split_config(df)
+    cv_cfg = ExpandingWindowCVConfig(
+        min_train_days=365,
+        val_days=30,
+        step_days=90,
+        max_folds=2,
+    )
+    model_cfg = QuantileModelConfig(
+        quantiles=[0.05, 0.50, 0.95],
+        iterations=20,
+        learning_rate=0.05,
+        depth=4,
+        random_seed=42,
+        verbose=0,
+        early_stopping_rounds=5,
+        task_type=task_type,
+    )
+    pipeline = WeatherQuantilePipeline(
+        dataset_cfg=dataset_cfg,
+        block_cfg=block_cfg,
+        cv_cfg=cv_cfg,
+        model_cfg=model_cfg,
+        interval_alphas=[0.10],
+    )
+    pipeline.fit_final(df)
+    return {
+        "cal": pipeline.evaluate_block("cal"),
+        "test": pipeline.evaluate_block("test"),
+    }
+
+
 def run_phase(
     df: pd.DataFrame,
     dataset_cfg: DatasetConfig,

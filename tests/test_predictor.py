@@ -17,6 +17,7 @@ from predictor import (
     build_kmia_dataset_config,
     build_phase1_config,
     load_kmia_training_data,
+    run_kmia_smoke_test,
     split_final_train_eval,
     validate_interval_quantiles,
 )
@@ -137,6 +138,18 @@ class FinalTrainingSplitTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "final eval"):
             split_final_train_eval(dev_df, dataset_cfg, eval_days=3)
+
+
+class KMIASmokeTests(unittest.TestCase):
+    def test_run_kmia_smoke_test_returns_cal_and_test_metrics(self) -> None:
+        metrics = run_kmia_smoke_test(DATA_PATH, task_type="CPU")
+
+        self.assertEqual(set(metrics), {"cal", "test"})
+        for block_metrics in metrics.values():
+            self.assertIn("mean_pinball_loss", block_metrics)
+            self.assertIn("coverage_90", block_metrics)
+            self.assertIn("width_90", block_metrics)
+            self.assertIn("crossing_rate_after_repair", block_metrics)
 
 
 if __name__ == "__main__":
