@@ -185,6 +185,11 @@ def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
         Pipeline-ready dataframe sorted by date. The output has ``date`` as the
         timestamp column, ``y`` as the target column, and the KMIA NBM feature
         columns unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the file is missing one or more required KMIA columns.
     """
     df = pd.read_csv(path)
     required_columns = {"validDate", "observedMaxT", *KMIA_FEATURE_COLUMNS}
