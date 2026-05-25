@@ -187,6 +187,12 @@ def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
         columns unchanged.
     """
     df = pd.read_csv(path)
+    required_columns = {"validDate", "observedMaxT", *KMIA_FEATURE_COLUMNS}
+    missing_columns = sorted(required_columns.difference(df.columns))
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ValueError(f"Missing required KMIA columns: {missing}")
+
     df = df.rename(columns={"validDate": "date", "observedMaxT": "y"})
     df["date"] = pd.to_datetime(df["date"], format="%B-%d-%Y")
 

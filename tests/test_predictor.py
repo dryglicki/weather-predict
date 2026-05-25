@@ -25,6 +25,16 @@ DATA_PATH = Path(__file__).resolve().parents[1] / "kalshiTraining_KMIA.dat"
 
 
 class KMIATrainingDataTests(unittest.TestCase):
+    def test_load_kmia_training_data_rejects_missing_columns(self) -> None:
+        path = Path("missing_kmia_columns.csv")
+        path.write_text("validDate,nbmMaxT,observedMaxT\nMAY-20-2020,88,94\n")
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Missing required KMIA columns"):
+                load_kmia_training_data(path)
+        finally:
+            path.unlink()
+
     def test_load_kmia_training_data_returns_pipeline_ready_frame(self) -> None:
         df = load_kmia_training_data(DATA_PATH)
 
