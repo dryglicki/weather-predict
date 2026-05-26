@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -168,6 +169,27 @@ def validate_interval_quantiles(
                 raise ValueError(
                     f"Interval alpha {alpha} requires quantile {q_required:.6g}."
                 )
+
+
+def supported_interval_alphas(quantiles: Sequence[float]) -> List[float]:
+    """
+    Return all central-interval miscoverage levels supported by the quantile grid.
+
+    For example, a grid containing 0.05 and 0.95 supports alpha=0.10.
+    """
+    validate_quantiles(quantiles)
+    q_values = np.asarray(quantiles, dtype=float)
+
+    alphas: List[float] = []
+    for q_lo in q_values[:-1]:
+        q_hi = 1.0 - q_lo
+        alpha = float(2.0 * q_lo)
+        if alpha >= 1.0:
+            continue
+        if np.any(np.isclose(q_values, q_hi)) and alpha not in alphas:
+            alphas.append(alpha)
+
+    return alphas
 
 
 def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
@@ -772,6 +794,131 @@ class ConformalCalibrator:
         return lower, upper
 
 
+@dataclass
+class WeatherQuantileArtifact:
+    """
+    Persisted CatBoost model plus conformal calibration metadata.
+    """
+    model: CatBoostRegressor
+    calibrator: ConformalCalibrator
+    dataset_cfg: DatasetConfig
+    model_cfg: QuantileModelConfig
+    feature_cols: Sequence[str]
+    interval_alphas: Sequence[float]
+    block_cfg: Optional[BlockSplitConfig] = None
+    cv_cfg: Optional[ExpandingWindowCVConfig] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def predict_quantiles(
+        self,
+        df: pd.DataFrame,
+        repair_crossing: bool = True,
+    ) -> ArrayLike:
+        """
+        Predict quantiles from the persisted CatBoost model.
+        """
+        preds = np.asarray(self.model.predict(df[list(self.feature_cols)]))
+        if preds.ndim == 1:
+            preds = preds[:, None]
+
+        if repair_crossing:
+            preds = enforce_non_crossing_cummax(preds)
+
+        return preds
+
+    def predict_distribution_inputs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Return repaired quantiles as a dataframe for downstream CDF work.
+        """
+        preds = self.predict_quantiles(df, repair_crossing=True)
+
+        out = pd.DataFrame(index=df.index)
+        for j, q in enumerate(self.model_cfg.quantiles):
+            out[f"q_{q:.3f}"] = preds[:, j]
+        return out
+
+    def predict_interval(
+        self,
+        df: pd.DataFrame,
+        alpha: float,
+    ) -> Tuple[ArrayLike, ArrayLike]:
+        """
+        Predict a conformalized central interval.
+        """
+        pred_matrix = self.predict_quantiles(df, repair_crossing=True)
+        return self.calibrator.predict_interval(pred_matrix, alpha)
+
+    def save(self, artifact_dir: str | Path) -> Path:
+        """
+        Save the CatBoost model to ``model.cbm`` and metadata to
+        ``artifact.json``.
+        """
+        artifact_path = Path(artifact_dir)
+        artifact_path.mkdir(parents=True, exist_ok=True)
+
+        model_path = artifact_path / "model.cbm"
+        json_path = artifact_path / "artifact.json"
+
+        self.model.save_model(str(model_path))
+        json_path.write_text(
+            json.dumps(self._to_json_payload(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        return artifact_path
+
+    def _to_json_payload(self) -> Dict[str, Any]:
+        return {
+            "format_version": 1,
+            "model_file": "model.cbm",
+            "dataset_cfg": asdict(self.dataset_cfg),
+            "block_cfg": asdict(self.block_cfg) if self.block_cfg is not None else None,
+            "cv_cfg": asdict(self.cv_cfg) if self.cv_cfg is not None else None,
+            "model_cfg": asdict(self.model_cfg),
+            "feature_cols": list(self.feature_cols),
+            "interval_alphas": [float(alpha) for alpha in self.interval_alphas],
+            "calibration_corrections": {
+                str(alpha): float(correction)
+                for alpha, correction in self.calibrator.result_.alpha_to_correction.items()
+            },
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def load(cls, artifact_dir: str | Path) -> "WeatherQuantileArtifact":
+        """
+        Load an artifact bundle from ``artifact_dir``.
+        """
+        artifact_path = Path(artifact_dir)
+        payload = json.loads((artifact_path / "artifact.json").read_text(encoding="utf-8"))
+
+        model = CatBoostRegressor()
+        model.load_model(str(artifact_path / payload["model_file"]))
+
+        dataset_cfg = DatasetConfig(**payload["dataset_cfg"])
+        block_cfg = BlockSplitConfig(**payload["block_cfg"]) if payload["block_cfg"] is not None else None
+        cv_cfg = ExpandingWindowCVConfig(**payload["cv_cfg"]) if payload["cv_cfg"] is not None else None
+        model_cfg = QuantileModelConfig(**payload["model_cfg"])
+
+        calibrator = ConformalCalibrator(model_cfg.quantiles)
+        calibrator.result_.alpha_to_correction = {
+            float(alpha): float(correction)
+            for alpha, correction in payload.get("calibration_corrections", {}).items()
+        }
+
+        return cls(
+            model=model,
+            calibrator=calibrator,
+            dataset_cfg=dataset_cfg,
+            model_cfg=model_cfg,
+            feature_cols=payload["feature_cols"],
+            interval_alphas=[float(alpha) for alpha in payload["interval_alphas"]],
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            metadata=dict(payload.get("metadata", {})),
+        )
+
+
 # =============================================================================
 # CV scoring
 # =============================================================================
@@ -936,7 +1083,7 @@ class WeatherQuantilePipeline:
         self.block_cfg = block_cfg
         self.cv_cfg = cv_cfg
         self.model_cfg = model_cfg
-        self.interval_alphas = list(interval_alphas or [0.10])
+        self.interval_alphas = list(interval_alphas) if interval_alphas is not None else supported_interval_alphas(self.model_cfg.quantiles)
         validate_interval_quantiles(self.model_cfg.quantiles, self.interval_alphas)
 
         self.block_manager = TimeBlockManager(dataset_cfg, block_cfg)
@@ -1087,6 +1234,41 @@ class WeatherQuantilePipeline:
             include_target=False,
         )
 
+    def build_artifact(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> WeatherQuantileArtifact:
+        """
+        Build a persisted artifact bundle from the fitted pipeline.
+        """
+        if self.model_ is None or self.calibrator_ is None:
+            raise RuntimeError("Pipeline has not been fit.")
+
+        artifact_metadata = dict(metadata or {})
+
+        return WeatherQuantileArtifact(
+            model=self.model_.model,
+            calibrator=self.calibrator_,
+            dataset_cfg=self.dataset_cfg,
+            model_cfg=self.model_.model_cfg,
+            feature_cols=list(self.model_.feature_cols_ or []),
+            interval_alphas=list(self.interval_alphas),
+            block_cfg=self.block_cfg,
+            cv_cfg=self.cv_cfg,
+            metadata=artifact_metadata,
+        )
+
+    def save_artifact(
+        self,
+        output_dir: str | Path,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Path:
+        """
+        Save the fitted pipeline as a CatBoost plus JSON artifact bundle.
+        """
+        artifact = self.build_artifact(metadata=metadata)
+        return artifact.save(output_dir)
+
 
 # =============================================================================
 # Convenience helpers for Phase 1 and Phase 2
@@ -1109,7 +1291,7 @@ def build_phase1_config() -> QuantileModelConfig:
         random_seed=42,
         verbose=0,
         early_stopping_rounds=100,
-        task_type="GPU",
+        task_type="CPU",
     )
 
 
@@ -1119,7 +1301,7 @@ def build_phase2_config_from_phase1(phase1_cfg: QuantileModelConfig) -> Quantile
     Reuse Phase 1 hyperparameters, but change quantile grid.
     """
     return QuantileModelConfig(
-        quantiles=[0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95],
+        quantiles=[0.05, 0.10, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.90, 0.95],
         iterations=phase1_cfg.iterations,
         learning_rate=phase1_cfg.learning_rate,
         depth=phase1_cfg.depth,
@@ -1199,9 +1381,9 @@ def run_phase(
     block_cfg: BlockSplitConfig,
     cv_cfg: ExpandingWindowCVConfig,
     model_cfg: QuantileModelConfig,
-    interval_alphas: Sequence[float],
     n_trials: int,
     study_name: str,
+    interval_alphas: Optional[Sequence[float]] = None,
 ) -> WeatherQuantilePipeline:
     """
     Run one full phase: tune -> fit final -> evaluate.
@@ -1263,7 +1445,6 @@ if __name__ == "__main__":
         block_cfg=block_cfg,
         cv_cfg=cv_cfg,
         model_cfg=phase1_cfg,
-        interval_alphas=[0.10],   # 90% interval
         n_trials=25,
         study_name="phase1_coarse_quantiles",
     )
@@ -1281,10 +1462,16 @@ if __name__ == "__main__":
         block_cfg=block_cfg,
         cv_cfg=cv_cfg,
         model_cfg=phase2_cfg,
-        interval_alphas=[0.10],
         n_trials=12,  # smaller retune is usually enough for phase 2
         study_name="phase2_denser_quantiles",
     )
+
+    artifact_dir = Path("artifacts") / "phase2_denser_quantiles"
+    phase2_pipeline.save_artifact(
+        artifact_dir,
+        metadata={"study_name": "phase2_denser_quantiles"},
+    )
+    print(f"\nSaved artifact bundle to {artifact_dir}")
 
     # Quantiles available for later CDF work
     test_quantiles = phase2_pipeline.predict_distribution_inputs(

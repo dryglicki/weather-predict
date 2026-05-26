@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from predictor import (
@@ -19,8 +20,10 @@ from predictor import (
     build_default_kmia_block_split_config,
     build_kmia_dataset_config,
     build_phase1_config,
+    build_phase2_config_from_phase1,
     load_kmia_training_data,
     run_kmia_smoke_test,
+    supported_interval_alphas,
     split_final_train_eval,
     validate_interval_quantiles,
 )
@@ -84,15 +87,28 @@ class KMIATrainingDataTests(unittest.TestCase):
 
 
 class QuantileIntervalTests(unittest.TestCase):
+    def test_supported_interval_alphas_from_phase2_grid(self) -> None:
+        quantiles = [0.05, 0.10, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.90, 0.95]
+        self.assertEqual(
+            supported_interval_alphas(quantiles),
+            [0.10, 0.20, 0.40, 0.50, 0.60, 0.80],
+        )
+
     def test_phase1_quantiles_support_default_ninety_percent_interval(self) -> None:
         model_cfg = build_phase1_config()
 
         validate_interval_quantiles(model_cfg.quantiles, [0.10])
 
-    def test_phase1_config_uses_gpu(self) -> None:
+    def test_phase1_config_uses_cpu(self) -> None:
         model_cfg = build_phase1_config()
 
-        self.assertEqual(model_cfg.task_type, "GPU")
+        self.assertEqual(model_cfg.task_type, "CPU")
+
+    def test_phase2_config_preserves_cpu_for_multiquantile_training(self) -> None:
+        phase1_cfg = build_phase1_config()
+        phase2_cfg = build_phase2_config_from_phase1(phase1_cfg)
+
+        self.assertEqual(phase2_cfg.task_type, "CPU")
 
     def test_validate_interval_quantiles_rejects_missing_endpoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "0.05"):
@@ -178,6 +194,52 @@ class KMIASmokeTests(unittest.TestCase):
             self.assertTrue(math.isfinite(block_metrics["width_90"]))
             self.assertGreaterEqual(block_metrics["width_90"], 0.0)
             self.assertEqual(block_metrics["crossing_rate_after_repair"], 0.0)
+
+    def test_pipeline_artifact_round_trip_saves_cbm_and_json(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(
+            min_train_days=365,
+            val_days=30,
+            step_days=90,
+            max_folds=1,
+        )
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=[0.10],
+        )
+        pipeline.fit_final(df)
+
+        sample_df = pipeline.blocks_["test"].head(5)
+        expected = pipeline.predict_distribution_inputs(sample_df)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "kmia_artifact"
+            artifact = pipeline.build_artifact(metadata={"run_name": "artifact_round_trip"})
+            artifact.save(artifact_dir)
+
+            self.assertTrue((artifact_dir / "model.cbm").exists())
+            self.assertTrue((artifact_dir / "artifact.json").exists())
+
+            loaded = type(artifact).load(artifact_dir)
+            actual = loaded.predict_distribution_inputs(sample_df)
+
+            np.testing.assert_allclose(actual.to_numpy(), expected.to_numpy())
+            self.assertEqual(loaded.metadata["run_name"], "artifact_round_trip")
 
 
 if __name__ == "__main__":
