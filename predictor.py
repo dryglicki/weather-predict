@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+import subprocess
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -199,6 +201,36 @@ def supported_interval_alphas(quantiles: Sequence[float]) -> List[float]:
             alphas.append(alpha)
 
     return alphas
+
+
+def build_artifact_version_name(
+    phase_name: str,
+    timestamp: str,
+    git_sha: str | None,
+) -> str:
+    """
+    Build a versioned artifact directory name.
+    """
+    short_sha = git_sha or "nogit"
+    return f"{phase_name}_{timestamp}_{short_sha}"
+
+
+def get_git_short_sha() -> Optional[str]:
+    """
+    Return the current short git SHA when available.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError, ValueError):
+        return None
+
+    sha = result.stdout.strip()
+    return sha or None
 
 
 def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
@@ -1303,12 +1335,43 @@ class WeatherQuantilePipeline:
         self,
         output_dir: str | Path,
         metadata: Optional[Dict[str, Any]] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        phase_name: Optional[str] = None,
     ) -> Path:
         """
         Save the fitted pipeline as a CatBoost plus JSON artifact bundle.
         """
         artifact = self.build_artifact(metadata=metadata)
-        return artifact.save(output_dir)
+        if phase_name is None:
+            return artifact.save(output_dir)
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        git_sha = get_git_short_sha()
+        version_name = build_artifact_version_name(phase_name, timestamp, git_sha)
+        artifact_path = Path(output_dir) / version_name
+        artifact.save(artifact_path)
+
+        metrics_payload = dict(metrics or {})
+        metrics_payload.update(
+            {
+                "artifact_version": version_name,
+                "phase_name": phase_name,
+                "timestamp": timestamp,
+                "git_sha": git_sha or "nogit",
+            }
+        )
+
+        if "study_name" not in metrics_payload and metadata is not None:
+            study_name = metadata.get("study_name")
+            if study_name is not None:
+                metrics_payload["study_name"] = study_name
+
+        (artifact_path / "metrics.json").write_text(
+            json.dumps(metrics_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        return artifact_path
 
 
 # =============================================================================

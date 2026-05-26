@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,7 @@ from predictor import (
     KMIA_FEATURE_COLUMNS,
     QuantileModelConfig,
     WeatherQuantilePipeline,
+    build_artifact_version_name,
     build_default_kmia_block_split_config,
     build_kmia_dataset_config,
     build_phase1_config,
@@ -372,6 +374,84 @@ class KMIASmokeTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "calibration_corrections"):
                 type(artifact).load(artifact_dir)
+
+
+class ArtifactVersioningTests(unittest.TestCase):
+    def test_build_artifact_version_name_uses_phase_timestamp_and_sha(self) -> None:
+        self.assertEqual(
+            build_artifact_version_name("phase2", "20260526_143012", "9106e55"),
+            "phase2_20260526_143012_9106e55",
+        )
+
+    def test_build_artifact_version_name_falls_back_to_nogit(self) -> None:
+        self.assertEqual(
+            build_artifact_version_name("phase2", "20260526_143012", None),
+            "phase2_20260526_143012_nogit",
+        )
+
+    def test_pipeline_save_artifact_writes_versioned_root_with_metrics(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(
+            min_train_days=365,
+            val_days=30,
+            step_days=90,
+            max_folds=1,
+        )
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=[0.10],
+        )
+        pipeline.fit_final(df)
+
+        metrics = {
+            "study_name": "phase2",
+            "cal": {"mean_pinball_loss": 0.1},
+            "test": {"mean_pinball_loss": 0.2},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_root = Path(tmpdir) / "artifacts"
+            with patch("predictor.datetime") as mock_datetime, patch(
+                "predictor.get_git_short_sha",
+                return_value="9106e55",
+            ):
+                mock_datetime.utcnow.return_value.strftime.return_value = "20260526_143012"
+                run_dir = pipeline.save_artifact(
+                    artifact_root,
+                    phase_name="phase2",
+                    metadata={"study_name": "phase2"},
+                    metrics=metrics,
+                )
+
+            self.assertEqual(run_dir.parent, artifact_root)
+            self.assertRegex(run_dir.name, r"^phase2_20260526_143012_9106e55$")
+            self.assertTrue((run_dir / "model.cbm").exists())
+            self.assertTrue((run_dir / "artifact.json").exists())
+            self.assertTrue((run_dir / "metrics.json").exists())
+
+            saved_metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_metrics["artifact_version"], run_dir.name)
+            self.assertEqual(saved_metrics["phase_name"], "phase2")
+            self.assertEqual(saved_metrics["timestamp"], "20260526_143012")
+            self.assertEqual(saved_metrics["git_sha"], "9106e55")
+            self.assertEqual(saved_metrics["cal"], {"mean_pinball_loss": 0.1})
+            self.assertEqual(saved_metrics["test"], {"mean_pinball_loss": 0.2})
+            self.assertEqual(saved_metrics["study_name"], "phase2")
 
 
 if __name__ == "__main__":
