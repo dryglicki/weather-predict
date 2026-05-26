@@ -1,3 +1,12 @@
+# Python bytecode and test caches
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# CatBoost and generated model artifacts
 catboost_info/
+artifacts/
+*.cbm
