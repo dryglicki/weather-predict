@@ -5,7 +5,9 @@ Kalshi weather trader experiments.
 ## KMIA Daily Maximum Temperature
 
 The current proof of concept trains a single-station KMIA daily maximum
-temperature quantile model from `kalshiTraining_KMIA.dat`.
+temperature quantile model from `kalshiTraining_KMIA.dat`, saves a CatBoost
+`model.cbm` plus `artifact.json`, and exposes a prediction CLI for downstream
+scoring.
 
 Run the test suite:
 
@@ -25,7 +27,12 @@ Run the full KMIA tuning entrypoint:
 python predictor.py
 ```
 
-The default phase-1 CatBoost config uses `task_type="GPU"`. Codex's sandbox
-does not expose a CUDA device, so Codex verifies smoke behavior on CPU. David's
-local `meteorology_py3d14` environment has verified that CatBoost can train with
-`task_type="GPU"`.
+Run the prediction CLI on a CSV:
+
+```bash
+python make_prediction.py --artifact-dir artifacts/phase2_denser_quantiles --input input.csv --output predictions.csv
+```
+
+The CatBoost `MultiQuantile` objective used by this pipeline runs on CPU. The
+sandbox verifies smoke behavior on CPU, and the saved artifact bundle is the
+interface used by downstream prediction code.
