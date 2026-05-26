@@ -426,11 +426,10 @@ class ArtifactVersioningTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_root = Path(tmpdir) / "artifacts"
-            with patch("predictor.datetime") as mock_datetime, patch(
+            with patch("predictor.get_utc_timestamp", return_value="20260526_143012"), patch(
                 "predictor.get_git_short_sha",
                 return_value="9106e55",
             ):
-                mock_datetime.utcnow.return_value.strftime.return_value = "20260526_143012"
                 run_dir = pipeline.save_artifact(
                     artifact_root,
                     phase_name="phase2",

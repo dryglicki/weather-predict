@@ -225,12 +225,20 @@ def get_git_short_sha() -> Optional[str]:
             check=True,
             capture_output=True,
             text=True,
+            cwd=Path(__file__).resolve().parent,
         )
-    except (FileNotFoundError, OSError, subprocess.CalledProcessError, ValueError):
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
         return None
 
     sha = result.stdout.strip()
     return sha or None
+
+
+def get_utc_timestamp() -> str:
+    """
+    Return the current UTC timestamp for versioned artifact naming.
+    """
+    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 
 def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
@@ -1345,7 +1353,7 @@ class WeatherQuantilePipeline:
         if phase_name is None:
             return artifact.save(output_dir)
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = get_utc_timestamp()
         git_sha = get_git_short_sha()
         version_name = build_artifact_version_name(phase_name, timestamp, git_sha)
         artifact_path = Path(output_dir) / version_name
