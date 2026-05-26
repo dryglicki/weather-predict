@@ -1527,6 +1527,47 @@ def run_phase(
     return pipeline
 
 
+def build_phase_artifact_metrics(
+    pipeline: WeatherQuantilePipeline,
+    study: optuna.study.Study,
+) -> Dict[str, Any]:
+    """
+    Build the standard metrics payload for a fitted KMIA phase.
+
+    Parameters
+    ----------
+    pipeline : WeatherQuantilePipeline
+        Fitted pipeline used for calibration and evaluation metrics.
+    study : optuna.study.Study
+        Optuna study that produced the fitted phase.
+    """
+    return {
+        "study_name": study.study_name,
+        "best_optuna_score": study.best_trial.value,
+        "best_params": study.best_trial.params,
+        "cal": pipeline.evaluate_block("cal"),
+        "test": pipeline.evaluate_block("test"),
+    }
+
+
+def save_phase_artifact(
+    pipeline: WeatherQuantilePipeline,
+    phase_name: str,
+    study: optuna.study.Study,
+    output_root: str | Path,
+) -> Path:
+    """
+    Save a fitted phase into a versioned artifact directory.
+    """
+    metrics = build_phase_artifact_metrics(pipeline, study)
+    return pipeline.save_artifact(
+        output_root,
+        phase_name=phase_name,
+        metadata={"study_name": phase_name},
+        metrics=metrics,
+    )
+
+
 if __name__ == "__main__":
     if "--smoke" in sys.argv:
         smoke_metrics = run_kmia_smoke_test("kalshiTraining_KMIA.dat", task_type="CPU")
@@ -1560,19 +1601,11 @@ if __name__ == "__main__":
         n_trials=25,
         study_name="phase1_coarse_quantiles",
     )
-    if phase1_pipeline.study_ is None:
-        raise RuntimeError("Phase 1 study was not initialized.")
-    phase1_path = phase1_pipeline.save_artifact(
-        Path("artifacts"),
+    phase1_path = save_phase_artifact(
+        phase1_pipeline,
         phase_name="phase1_coarse_quantiles",
-        metadata={"study_name": "phase1_coarse_quantiles"},
-        metrics={
-            "study_name": phase1_pipeline.study_.study_name,
-            "best_optuna_score": phase1_pipeline.study_.best_trial.value,
-            "best_params": phase1_pipeline.study_.best_trial.params,
-            "cal": phase1_pipeline.evaluate_block("cal"),
-            "test": phase1_pipeline.evaluate_block("test"),
-        },
+        study=phase1_pipeline.study_,
+        output_root=Path("artifacts"),
     )
     print(f"\nSaved artifact bundle to {phase1_path}")
 
@@ -1592,19 +1625,11 @@ if __name__ == "__main__":
         n_trials=12,  # smaller retune is usually enough for phase 2
         study_name="phase2_denser_quantiles",
     )
-    if phase2_pipeline.study_ is None:
-        raise RuntimeError("Phase 2 study was not initialized.")
-    phase2_path = phase2_pipeline.save_artifact(
-        Path("artifacts"),
+    phase2_path = save_phase_artifact(
+        phase2_pipeline,
         phase_name="phase2_denser_quantiles",
-        metadata={"study_name": "phase2_denser_quantiles"},
-        metrics={
-            "study_name": phase2_pipeline.study_.study_name,
-            "best_optuna_score": phase2_pipeline.study_.best_trial.value,
-            "best_params": phase2_pipeline.study_.best_trial.params,
-            "cal": phase2_pipeline.evaluate_block("cal"),
-            "test": phase2_pipeline.evaluate_block("test"),
-        },
+        study=phase2_pipeline.study_,
+        output_root=Path("artifacts"),
     )
     print(f"\nSaved artifact bundle to {phase2_path}")
 
