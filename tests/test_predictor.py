@@ -136,6 +136,34 @@ class QuantileIntervalTests(unittest.TestCase):
                 interval_alphas=[0.10],
             )
 
+    def test_pipeline_defaults_interval_alphas_from_quantile_grid(self) -> None:
+        dataset_cfg = DatasetConfig(date_col="date", target_col="y")
+        block_cfg = BlockSplitConfig(
+            dev_start="2024-01-01",
+            dev_end="2024-01-31",
+            cal_start="2024-02-01",
+            cal_end="2024-02-15",
+            test_start="2024-02-16",
+            test_end="2024-02-29",
+        )
+        cv_cfg = ExpandingWindowCVConfig(min_train_days=7, val_days=3, step_days=3)
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.10, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.90, 0.95]
+        )
+
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=None,
+        )
+
+        self.assertEqual(
+            pipeline.interval_alphas,
+            [0.10, 0.20, 0.40, 0.50, 0.60, 0.80],
+        )
+
 
 class FinalTrainingSplitTests(unittest.TestCase):
     def test_split_final_train_eval_uses_tail_of_development_block(self) -> None:
