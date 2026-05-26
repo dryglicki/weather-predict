@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
+import shutil
 import unittest
 from pathlib import Path
 
@@ -122,6 +124,76 @@ class ScoreMarketsCLITests(unittest.TestCase):
             self.assertIn("yes_ev_cents", scored_df.columns)
             self.assertIn("recommended_side", scored_df.columns)
             self.assertEqual(scored_df.iloc[0]["market_id"], "mia_4")
+
+    def test_score_markets_cli_can_enable_distribution_calibration_from_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            forecast_csv = tmpdir_path / "forecast.csv"
+            markets_csv = tmpdir_path / "markets.csv"
+            output_csv = tmpdir_path / "scored.csv"
+            artifact_dir = tmpdir_path / "artifact"
+
+            shutil.copytree(Path(__file__).resolve().parents[1] / "artifacts" / "phase2_denser_quantiles", artifact_dir)
+            payload_path = artifact_dir / "artifact.json"
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            payload["distribution_calibration"] = {
+                "pit_knots": [0.0, 0.5, 1.0],
+                "calibrated_knots": [0.0, 0.75, 1.0],
+            }
+            payload_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+            pd.DataFrame(
+                [
+                    {
+                        "date": "2026-05-26",
+                        "q_0.050": 80.0,
+                        "q_0.500": 90.0,
+                        "q_0.950": 100.0,
+                    }
+                ]
+            ).to_csv(forecast_csv, index=False)
+
+            pd.DataFrame(
+                [
+                    {
+                        "market_id": "mia_1",
+                        "market_name": "Miami 88-89",
+                        "comparison": "between",
+                        "lower_bound": 88,
+                        "upper_bound": 89,
+                        "yes_price": 20,
+                        "no_price": 80,
+                    }
+                ]
+            ).to_csv(markets_csv, index=False)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "score_markets.py",
+                    "--forecast",
+                    str(forecast_csv),
+                    "--markets",
+                    str(markets_csv),
+                    "--output",
+                    str(output_csv),
+                    "--artifact-dir",
+                    str(artifact_dir),
+                    "--distribution-calibration",
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            scored_df = pd.read_csv(output_csv)
+            self.assertIn("calibrated_p_yes", scored_df.columns)
+            self.assertIn("calibrated_yes_ev_cents", scored_df.columns)
+            self.assertIn("calibrated_no_ev_cents", scored_df.columns)
+            self.assertIn("raw_p_yes", scored_df.columns)
+            self.assertNotEqual(scored_df.iloc[0]["raw_p_yes"], scored_df.iloc[0]["p_yes"])
 
     def test_score_markets_cli_rejects_multiple_forecast_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
