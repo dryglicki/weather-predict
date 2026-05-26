@@ -6,7 +6,7 @@ import json
 import sys
 import subprocess
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -238,7 +238,7 @@ def get_utc_timestamp() -> str:
     """
     Return the current UTC timestamp for versioned artifact naming.
     """
-    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
 
 def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
