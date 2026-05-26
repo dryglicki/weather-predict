@@ -24,7 +24,7 @@ except Exception:
 
 ArrayLike = np.ndarray
 
-KMIA_FEATURE_COLUMNS: Tuple[str, ...] = (
+KMIA_RAW_FEATURE_COLUMNS: Tuple[str, ...] = (
     "nbmMaxT",
     "nbmDeltaT",
     "skyCover",
@@ -32,6 +32,15 @@ KMIA_FEATURE_COLUMNS: Tuple[str, ...] = (
     "sin(windDir)",
     "cos(windDir)",
     "6hrQPF",
+)
+
+KMIA_FEATURE_COLUMNS: Tuple[str, ...] = (
+    *KMIA_RAW_FEATURE_COLUMNS,
+    "biasLag1",
+    "biasRoll7Mean",
+    "biasRoll7Std",
+    "doySin",
+    "doyCos",
 )
 
 
@@ -206,8 +215,8 @@ def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
     -------
     pandas.DataFrame
         Pipeline-ready dataframe sorted by date. The output has ``date`` as the
-        timestamp column, ``y`` as the target column, and the KMIA NBM feature
-        columns unchanged.
+        timestamp column, ``y`` as the target column, the KMIA NBM feature
+        columns, and precomputed bias / seasonal features.
 
     Raises
     ------
@@ -215,7 +224,7 @@ def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
         If the file is missing one or more required KMIA columns.
     """
     df = pd.read_csv(path)
-    required_columns = {"validDate", "observedMaxT", *KMIA_FEATURE_COLUMNS}
+    required_columns = {"validDate", "observedMaxT", *KMIA_RAW_FEATURE_COLUMNS}
     missing_columns = sorted(required_columns.difference(df.columns))
     if missing_columns:
         missing = ", ".join(missing_columns)
@@ -223,9 +232,21 @@ def load_kmia_training_data(path: str | Path) -> pd.DataFrame:
 
     df = df.rename(columns={"validDate": "date", "observedMaxT": "y"})
     df["date"] = pd.to_datetime(df["date"], format="%B-%d-%Y")
+    df = df.sort_values("date").reset_index(drop=True)
+
+    bias_error = df["y"] - df["nbmMaxT"]
+    prior_bias = bias_error.shift(1)
+    df["biasLag1"] = prior_bias
+    df["biasRoll7Mean"] = prior_bias.rolling(window=7, min_periods=1).mean()
+    df["biasRoll7Std"] = prior_bias.rolling(window=7, min_periods=2).std(ddof=0)
+
+    day_of_year = df["date"].dt.dayofyear.astype(float)
+    angle = 2.0 * np.pi * (day_of_year - 1.0) / 365.25
+    df["doySin"] = np.sin(angle)
+    df["doyCos"] = np.cos(angle)
 
     columns = ["date", *KMIA_FEATURE_COLUMNS, "y"]
-    df = df.loc[:, columns].sort_values("date").reset_index(drop=True)
+    df = df.loc[:, columns]
     return df
 
 
