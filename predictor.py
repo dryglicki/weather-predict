@@ -849,9 +849,14 @@ class WeatherQuantileArtifact:
         return self.calibrator.predict_interval(pred_matrix, alpha)
 
     def predict_output_frame(self, df: pd.DataFrame) -> pd.DataFrame:
-        out = self.predict_distribution_inputs(df)
+        pred_matrix = self.predict_quantiles(df, repair_crossing=True)
+
+        out = pd.DataFrame(index=df.index)
+        for j, q in enumerate(self.model_cfg.quantiles):
+            out[f"q_{q:.3f}"] = pred_matrix[:, j]
+
         for alpha in self.interval_alphas:
-            lower, upper = self.predict_interval(df, alpha)
+            lower, upper = self.calibrator.predict_interval(pred_matrix, alpha)
             pct = int(round((1.0 - alpha) * 100))
             out[f"interval_{pct}_lower"] = lower
             out[f"interval_{pct}_upper"] = upper
@@ -908,12 +913,18 @@ class WeatherQuantileArtifact:
         block_cfg = BlockSplitConfig(**payload["block_cfg"]) if payload["block_cfg"] is not None else None
         cv_cfg = ExpandingWindowCVConfig(**payload["cv_cfg"]) if payload["cv_cfg"] is not None else None
         model_cfg = QuantileModelConfig(**payload["model_cfg"])
-
-        calibrator = ConformalCalibrator(model_cfg.quantiles)
-        calibrator.result_.alpha_to_correction = {
+        interval_alphas = [float(alpha) for alpha in payload["interval_alphas"]]
+        calibration_corrections = {
             float(alpha): float(correction)
             for alpha, correction in payload.get("calibration_corrections", {}).items()
         }
+
+        if set(calibration_corrections) != set(interval_alphas):
+            raise ValueError("calibration_corrections must match interval_alphas.")
+        validate_interval_quantiles(model_cfg.quantiles, interval_alphas)
+
+        calibrator = ConformalCalibrator(model_cfg.quantiles)
+        calibrator.result_.alpha_to_correction = calibration_corrections
 
         return cls(
             model=model,
@@ -921,7 +932,7 @@ class WeatherQuantileArtifact:
             dataset_cfg=dataset_cfg,
             model_cfg=model_cfg,
             feature_cols=payload["feature_cols"],
-            interval_alphas=[float(alpha) for alpha in payload["interval_alphas"]],
+            interval_alphas=interval_alphas,
             block_cfg=block_cfg,
             cv_cfg=cv_cfg,
             metadata=dict(payload.get("metadata", {})),
