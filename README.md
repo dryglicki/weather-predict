@@ -33,7 +33,7 @@ Run the prediction CLI on a CSV:
 python make_prediction.py --artifact-dir artifacts/phase2_denser_quantiles --input input.csv --output predictions.csv
 ```
 
-Plot calibration on the held-out test block:
+Plot raw vs calibrated PIT on the held-out test block:
 
 ```bash
 python plot_calibration.py --artifact-dir artifacts/phase2_denser_quantiles --data kalshiTraining_KMIA.dat --output calibration.png
@@ -43,6 +43,12 @@ Score Miami weather contracts from a forecast CSV:
 
 ```bash
 python score_markets.py --forecast predictions.csv --markets markets.csv --output scored.csv
+```
+
+To use the optional distribution-calibration scoring path, pass the saved artifact bundle and enable the toggle:
+
+```bash
+python score_markets.py --artifact-dir artifacts/phase2_denser_quantiles --distribution-calibration --forecast predictions.csv --markets markets.csv --output scored.csv
 ```
 
 The market CSV should contain `market_id`, `market_name`, `comparison`, `lower_bound`, `upper_bound`, `yes_price`, and `no_price`. Supported comparisons are `le`, `between`, and `ge`. Contract bounds are inclusive, and settlement temperatures are rounded to integers.
