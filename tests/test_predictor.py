@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 import subprocess
@@ -268,6 +269,48 @@ class KMIASmokeTests(unittest.TestCase):
 
             np.testing.assert_allclose(actual.to_numpy(), expected.to_numpy())
             self.assertEqual(loaded.metadata["run_name"], "artifact_round_trip")
+
+    def test_pipeline_artifact_round_trip_saves_all_interval_corrections(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(
+            min_train_days=365,
+            val_days=30,
+            step_days=90,
+            max_folds=1,
+        )
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.10, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.90, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+        )
+        pipeline.fit_final(df)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "kmia_artifact"
+            artifact = pipeline.build_artifact(metadata={"run_name": "artifact_round_trip"})
+            artifact.save(artifact_dir)
+
+            payload = json.loads((artifact_dir / "artifact.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                sorted(payload["calibration_corrections"]),
+                ["0.1", "0.2", "0.4", "0.5", "0.6", "0.8"],
+            )
+
+            loaded = type(artifact).load(artifact_dir)
+            self.assertEqual(sorted(loaded.calibrator.result_.alpha_to_correction), [0.1, 0.2, 0.4, 0.5, 0.6, 0.8])
 
 
 if __name__ == "__main__":

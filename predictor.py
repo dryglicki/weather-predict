@@ -848,6 +848,15 @@ class WeatherQuantileArtifact:
         pred_matrix = self.predict_quantiles(df, repair_crossing=True)
         return self.calibrator.predict_interval(pred_matrix, alpha)
 
+    def predict_output_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = self.predict_distribution_inputs(df)
+        for alpha in self.interval_alphas:
+            lower, upper = self.predict_interval(df, alpha)
+            pct = int(round((1.0 - alpha) * 100))
+            out[f"interval_{pct}_lower"] = lower
+            out[f"interval_{pct}_upper"] = upper
+        return out
+
     def save(self, artifact_dir: str | Path) -> Path:
         """
         Save the CatBoost model to ``model.cbm`` and metadata to
