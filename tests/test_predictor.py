@@ -97,6 +97,11 @@ class KMIATrainingDataTests(unittest.TestCase):
         self.assertIn("block_cfg = build_default_kmia_block_split_config(df)", source)
         self.assertIn('if "--smoke" in sys.argv:', source)
         self.assertIn("run_kmia_smoke_test(", source)
+        self.assertIn('phase1_pipeline.save_artifact(', source)
+        self.assertIn('phase_name="phase1_coarse_quantiles"', source)
+        self.assertIn('phase2_pipeline.save_artifact(', source)
+        self.assertIn('phase_name="phase2_denser_quantiles"', source)
+        self.assertIn('Path("artifacts")', source)
         self.assertNotIn('pd.read_parquet("station_temperature_features.parquet")', source)
 
 

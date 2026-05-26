@@ -1560,6 +1560,21 @@ if __name__ == "__main__":
         n_trials=25,
         study_name="phase1_coarse_quantiles",
     )
+    if phase1_pipeline.study_ is None:
+        raise RuntimeError("Phase 1 study was not initialized.")
+    phase1_path = phase1_pipeline.save_artifact(
+        Path("artifacts"),
+        phase_name="phase1_coarse_quantiles",
+        metadata={"study_name": "phase1_coarse_quantiles"},
+        metrics={
+            "study_name": phase1_pipeline.study_.study_name,
+            "best_optuna_score": phase1_pipeline.study_.best_trial.value,
+            "best_params": phase1_pipeline.study_.best_trial.params,
+            "cal": phase1_pipeline.evaluate_block("cal"),
+            "test": phase1_pipeline.evaluate_block("test"),
+        },
+    )
+    print(f"\nSaved artifact bundle to {phase1_path}")
 
     # -----------------------------
     # Phase 2: denser quantiles
@@ -1577,13 +1592,21 @@ if __name__ == "__main__":
         n_trials=12,  # smaller retune is usually enough for phase 2
         study_name="phase2_denser_quantiles",
     )
-
-    artifact_dir = Path("artifacts") / "phase2_denser_quantiles"
-    phase2_pipeline.save_artifact(
-        artifact_dir,
+    if phase2_pipeline.study_ is None:
+        raise RuntimeError("Phase 2 study was not initialized.")
+    phase2_path = phase2_pipeline.save_artifact(
+        Path("artifacts"),
+        phase_name="phase2_denser_quantiles",
         metadata={"study_name": "phase2_denser_quantiles"},
+        metrics={
+            "study_name": phase2_pipeline.study_.study_name,
+            "best_optuna_score": phase2_pipeline.study_.best_trial.value,
+            "best_params": phase2_pipeline.study_.best_trial.params,
+            "cal": phase2_pipeline.evaluate_block("cal"),
+            "test": phase2_pipeline.evaluate_block("test"),
+        },
     )
-    print(f"\nSaved artifact bundle to {artifact_dir}")
+    print(f"\nSaved artifact bundle to {phase2_path}")
 
     # Quantiles available for later CDF work
     test_quantiles = phase2_pipeline.predict_distribution_inputs(
