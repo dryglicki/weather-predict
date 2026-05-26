@@ -994,7 +994,7 @@ def suggest_catboost_params(
     """
     return QuantileModelConfig(
         quantiles=base_model_cfg.quantiles,
-        iterations=trial.suggest_int("iterations", 500, 2500, step=250),
+        iterations=base_model_cfg.iterations,
         learning_rate=trial.suggest_float("learning_rate", 0.005, 0.08, log=True),
         depth=trial.suggest_int("depth", 4, 8),
         l2_leaf_reg=trial.suggest_float("l2_leaf_reg", 1.0, 20.0, log=True),
@@ -1150,7 +1150,7 @@ class WeatherQuantilePipeline:
         best_params = study.best_trial.params
         self.best_model_cfg_ = QuantileModelConfig(
             quantiles=self.model_cfg.quantiles,
-            iterations=int(best_params["iterations"]),
+            iterations=self.model_cfg.iterations,
             learning_rate=float(best_params["learning_rate"]),
             depth=int(best_params["depth"]),
             l2_leaf_reg=float(best_params["l2_leaf_reg"]),
@@ -1300,7 +1300,7 @@ def build_phase1_config() -> QuantileModelConfig:
     """
     return QuantileModelConfig(
         quantiles=[0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95],
-        iterations=1500,
+        iterations=5000,
         learning_rate=0.03,
         depth=6,
         l2_leaf_reg=3.0,
@@ -1310,7 +1310,7 @@ def build_phase1_config() -> QuantileModelConfig:
         border_count=254,
         random_seed=42,
         verbose=0,
-        early_stopping_rounds=100,
+        early_stopping_rounds=200,
         task_type="CPU",
     )
 
@@ -1322,7 +1322,7 @@ def build_phase2_config_from_phase1(phase1_cfg: QuantileModelConfig) -> Quantile
     """
     return QuantileModelConfig(
         quantiles=[0.05, 0.10, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.90, 0.95],
-        iterations=phase1_cfg.iterations,
+        iterations=5000,
         learning_rate=phase1_cfg.learning_rate,
         depth=phase1_cfg.depth,
         l2_leaf_reg=phase1_cfg.l2_leaf_reg,
@@ -1334,7 +1334,7 @@ def build_phase2_config_from_phase1(phase1_cfg: QuantileModelConfig) -> Quantile
         eval_metric=phase1_cfg.eval_metric,
         random_seed=phase1_cfg.random_seed,
         verbose=0,
-        early_stopping_rounds=phase1_cfg.early_stopping_rounds,
+        early_stopping_rounds=200,
         task_type=phase1_cfg.task_type,
     )
 

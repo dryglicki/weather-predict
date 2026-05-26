@@ -111,6 +111,15 @@ class QuantileIntervalTests(unittest.TestCase):
 
         self.assertEqual(phase2_cfg.task_type, "CPU")
 
+    def test_phase_configs_use_fixed_iteration_ceiling_and_long_early_stopping(self) -> None:
+        phase1_cfg = build_phase1_config()
+        phase2_cfg = build_phase2_config_from_phase1(phase1_cfg)
+
+        self.assertEqual(phase1_cfg.iterations, 5000)
+        self.assertEqual(phase1_cfg.early_stopping_rounds, 200)
+        self.assertEqual(phase2_cfg.iterations, 5000)
+        self.assertEqual(phase2_cfg.early_stopping_rounds, 200)
+
     def test_validate_interval_quantiles_rejects_missing_endpoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "0.05"):
             validate_interval_quantiles([0.10, 0.50, 0.90], [0.10])
