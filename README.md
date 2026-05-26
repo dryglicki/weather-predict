@@ -33,6 +33,12 @@ Run the prediction CLI on a CSV:
 python make_prediction.py --artifact-dir artifacts/phase2_denser_quantiles --input input.csv --output predictions.csv
 ```
 
+Plot calibration on the held-out test block:
+
+```bash
+python plot_calibration.py --artifact-dir artifacts/phase2_denser_quantiles --data kalshiTraining_KMIA.dat --output calibration.png
+```
+
 Score Miami weather contracts from a forecast CSV:
 
 ```bash
