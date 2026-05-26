@@ -17,7 +17,7 @@ from predictor import (
     build_kmia_dataset_config,
     load_kmia_training_data,
 )
-from plot_calibration import compute_pit_values, compute_rank_values
+from plot_calibration import compute_pit_values, compute_rank_values, rank_labels_from_quantiles
 
 
 DATA_PATH = Path(__file__).resolve().parents[1] / "kalshiTraining_KMIA.dat"
@@ -41,6 +41,14 @@ class PlotCalibrationTests(unittest.TestCase):
         self.assertTrue(np.all(pit_values >= 0.0))
         self.assertTrue(np.all(pit_values <= 1.0))
         self.assertListEqual(rank_values.tolist(), [1, 2])
+
+    def test_rank_labels_from_quantiles_uses_actual_interval_bounds(self) -> None:
+        labels = rank_labels_from_quantiles([0.05, 0.10, 0.20, 0.25])
+
+        self.assertEqual(
+            labels,
+            ["<q_0.05", "q_0.05-q_0.10", "q_0.10-q_0.20", "q_0.20-q_0.25", ">q_0.25"],
+        )
 
     def test_plot_calibration_cli_writes_png_from_held_out_test_block(self) -> None:
         df = load_kmia_training_data(DATA_PATH)

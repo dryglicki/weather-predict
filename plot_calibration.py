@@ -15,6 +15,18 @@ from market_scoring import build_cdf_from_quantiles
 from predictor import TimeBlockManager, WeatherQuantileArtifact, load_kmia_training_data
 
 
+def rank_labels_from_quantiles(quantiles: list[float] | tuple[float, ...] | np.ndarray) -> list[str]:
+    q_values = [float(q) for q in quantiles]
+    if not q_values:
+        raise ValueError("quantiles must not be empty.")
+
+    labels = [f"<q_{q_values[0]:.2f}"]
+    for left, right in zip(q_values[:-1], q_values[1:]):
+        labels.append(f"q_{left:.2f}-q_{right:.2f}")
+    labels.append(f">q_{q_values[-1]:.2f}")
+    return labels
+
+
 def compute_pit_values(y_true: np.ndarray | pd.Series, pred_df: pd.DataFrame) -> np.ndarray:
     y_arr = np.asarray(y_true, dtype=float)
     pit_values = np.empty(len(y_arr), dtype=float)
@@ -46,7 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _plot_histograms(pit_values: np.ndarray, rank_values: np.ndarray, n_quantiles: int, output_path: Path) -> None:
+def _plot_histograms(
+    pit_values: np.ndarray,
+    rank_values: np.ndarray,
+    quantiles: list[float] | tuple[float, ...] | np.ndarray,
+    output_path: Path,
+) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
     axes[0].hist(pit_values, bins=np.linspace(0.0, 1.0, 11), edgecolor="black")
@@ -57,14 +74,16 @@ def _plot_histograms(pit_values: np.ndarray, rank_values: np.ndarray, n_quantile
 
     axes[1].hist(
         rank_values,
-        bins=np.arange(-0.5, n_quantiles + 1.5, 1.0),
+        bins=np.arange(-0.5, len(quantiles) + 1.5, 1.0),
         edgecolor="black",
         align="mid",
     )
     axes[1].set_title("Quantile rank histogram")
-    axes[1].set_xlabel("Rank")
+    axes[1].set_xlabel("Quantile interval")
     axes[1].set_ylabel("Count")
-    axes[1].set_xlim(-0.5, n_quantiles + 0.5)
+    axes[1].set_xlim(-0.5, len(quantiles) + 0.5)
+    axes[1].set_xticks(np.arange(len(quantiles) + 1))
+    axes[1].set_xticklabels(rank_labels_from_quantiles(quantiles), rotation=45, ha="right")
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -90,7 +109,7 @@ def main() -> int:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    _plot_histograms(pit_values, rank_values, len(artifact.model_cfg.quantiles), output_path)
+    _plot_histograms(pit_values, rank_values, artifact.model_cfg.quantiles, output_path)
 
     print(f"Wrote calibration plot to {output_path}")
     print(f"Test rows: {len(test_df)}")
