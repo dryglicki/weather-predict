@@ -918,7 +918,7 @@ class WeatherQuantilePipeline:
     Flow:
         1. split full data into dev / cal / test
         2. tune hyperparameters with expanding-window CV on dev only
-        3. refit final model on full development block
+        3. refit final model on the development block, reserving its tail for early stopping
         4. predict on cal and test
         5. fit conformal calibration on cal only
         6. evaluate on cal and test
@@ -1003,8 +1003,8 @@ class WeatherQuantilePipeline:
 
     def fit_final(self, df: pd.DataFrame) -> None:
         """
-        Fit final model on full development block, using the best Optuna config
-        if available, otherwise the base config.
+        Fit final model from the development block, using a development tail
+        for early stopping and preserving calibration data for conformal calibration.
         """
         if self.blocks_ is None:
             self.blocks_ = self.block_manager.split(df)
