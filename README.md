@@ -33,6 +33,14 @@ Run the prediction CLI on a CSV:
 python make_prediction.py --artifact-dir artifacts/phase2_denser_quantiles --input input.csv --output predictions.csv
 ```
 
+Score Miami weather contracts from a forecast CSV:
+
+```bash
+python score_markets.py --forecast predictions.csv --markets markets.csv --output scored.csv
+```
+
+The market CSV should contain `market_id`, `market_name`, `comparison`, `lower_bound`, `upper_bound`, `yes_price`, and `no_price`. Supported comparisons are `le`, `between`, and `ge`. Contract bounds are inclusive, and settlement temperatures are rounded to integers.
+
 The CatBoost `MultiQuantile` objective used by this pipeline runs on CPU. The
 sandbox verifies smoke behavior on CPU, and the saved artifact bundle is the
 interface used by downstream prediction code.

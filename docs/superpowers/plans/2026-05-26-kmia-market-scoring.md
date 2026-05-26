@@ -4,7 +4,7 @@
 
 **Goal:** Turn the KMIA forecast distribution into a scoring tool for separate Kalshi yes/no temperature contracts, compute yes/no expected value after a 2% fee, and rank the best Miami trades for a 10 AM market open using the 7 AM forecast.
 
-**Architecture:** Keep `make_prediction.py` as the forecast generator and add a separate, pure scoring layer. The scorer should consume one forecast CSV row with repaired quantiles plus a contract CSV with Miami bin definitions and yes/no prices. A new `market_scoring.py` module will own the CDF interpolation and expected-value math; a new `score_markets.py` CLI will load the forecast, score each contract independently, and emit a ranked table. The scorer should support three comparison types: `le` (yes if temperature is at or below the upper bound), `between` (yes if the temperature falls inside the band), and `ge` (yes if the temperature is at or above the lower bound).
+**Architecture:** Keep `make_prediction.py` as the forecast generator and add a separate, pure scoring layer. The scorer should consume one forecast CSV row with repaired quantiles plus a contract CSV with Miami bin definitions and yes/no prices. A new `market_scoring.py` module will own the CDF interpolation and expected-value math; a new `score_markets.py` CLI will load the forecast, score each contract independently, and emit a ranked table. The scorer should support three comparison types: `le` (yes if the settled integer temperature is at or below the upper bound), `between` (yes if the settled integer temperature falls inside the inclusive band), and `ge` (yes if the settled integer temperature is at or above the lower bound).
 
 **Tech Stack:** Python 3.14, pandas, NumPy, argparse, pytest.
 
@@ -25,7 +25,7 @@
 - `make_prediction.py` already exists and produces a CSV with repaired quantiles (`q_*`) and calibrated interval columns.
 - The KMIA artifact bundle already exists and is the input to `make_prediction.py`.
 - The scorer is a separate layer: it should not re-train the model and should not read the CatBoost artifact directly.
-- Operational rule: forecast cutoff is the 7 AM NBM run; market pricing is taken at the 10 AM open; the fee model is 2% of the wager.
+- Operational rule: forecast cutoff is the 7 AM NBM run; market pricing is taken at the 10 AM open; the fee model is 2% of the wager; settlement temperatures are rounded to integers and contract bounds are inclusive.
 
 ---
 
@@ -630,7 +630,7 @@ python make_prediction.py --artifact-dir artifacts/phase2_denser_quantiles --inp
 python score_markets.py --forecast forecast.csv --markets markets.csv --output scored.csv
 ```
 
-The scorer expects one forecast row and a CSV of contract rows. The market CSV should contain `market_id`, `market_name`, `comparison`, `lower_bound`, `upper_bound`, `yes_price`, and `no_price`. Supported comparisons are `le`, `between`, and `ge`.
+The scorer expects one forecast row and a CSV of contract rows. The market CSV should contain `market_id`, `market_name`, `comparison`, `lower_bound`, `upper_bound`, `yes_price`, and `no_price`. Supported comparisons are `le`, `between`, and `ge`. Bounds are inclusive, and the underlying settlement temperature is an integer.
 
 The scorer computes a yes probability from the calibrated quantile distribution, converts that to expected value after a 2% wager fee, and ranks contracts by the best positive edge.
 ```
