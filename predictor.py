@@ -856,6 +856,107 @@ class ConformalCalibrator:
 
 
 @dataclass
+class DistributionCalibrator:
+    """
+    Monotone empirical PIT remap calibrator.
+
+    Attributes
+    ----------
+    pit_knots : np.ndarray
+        Sorted PIT knot values on the x-axis.
+    calibrated_knots : np.ndarray
+        Monotone calibrated values on the y-axis.
+    """
+    pit_knots: ArrayLike
+    calibrated_knots: ArrayLike
+
+    @staticmethod
+    def _compact_duplicate_knots(
+        pit_knots: ArrayLike,
+        calibrated_knots: ArrayLike,
+    ) -> tuple[ArrayLike, ArrayLike]:
+        """
+        Collapse repeated PIT knots while preserving monotone calibration.
+        """
+        unique_pit_knots = np.unique(pit_knots)
+        if unique_pit_knots.size == pit_knots.size:
+            return pit_knots, calibrated_knots
+
+        compact_calibrated_knots = np.array(
+            [
+                float(np.max(calibrated_knots[np.isclose(pit_knots, knot)]))
+                for knot in unique_pit_knots
+            ],
+            dtype=float,
+        )
+        return unique_pit_knots, compact_calibrated_knots
+
+    @classmethod
+    def fit(cls, pit_values: ArrayLike, n_knots: int = 101) -> "DistributionCalibrator":
+        """
+        Fit a monotone empirical PIT remap from observed PIT values.
+        """
+        pit = np.asarray(pit_values, dtype=float)
+        if pit.ndim != 1:
+            raise ValueError("pit_values must be a 1D array.")
+        if pit.size == 0:
+            raise ValueError("pit_values must not be empty.")
+        if n_knots < 2:
+            raise ValueError("n_knots must be at least 2.")
+
+        pit = np.clip(pit, 0.0, 1.0)
+        knot_probs = np.linspace(0.0, 1.0, n_knots, dtype=float)
+        pit_knots = np.quantile(pit, knot_probs)
+        calibrated_knots = knot_probs
+        pit_knots, calibrated_knots = cls._compact_duplicate_knots(pit_knots, calibrated_knots)
+        if pit_knots.size < 2:
+            raise ValueError("Distribution calibration requires at least two distinct PIT knots.")
+        return cls(pit_knots=np.asarray(pit_knots, dtype=float), calibrated_knots=calibrated_knots)
+
+    def transform(self, u: ArrayLike) -> ArrayLike:
+        """
+        Transform raw PIT values using the fitted monotone remap.
+        """
+        values = np.asarray(u, dtype=float)
+        return np.interp(values, self.pit_knots, self.calibrated_knots, left=0.0, right=1.0)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Serialize distribution calibration state to JSON-compatible dict.
+        """
+        return {
+            "pit_knots": np.asarray(self.pit_knots, dtype=float).tolist(),
+            "calibrated_knots": np.asarray(self.calibrated_knots, dtype=float).tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "DistributionCalibrator":
+        """
+        Deserialize distribution calibration state from dictionary payload.
+        """
+        pit_knots = np.asarray(payload["pit_knots"], dtype=float)
+        calibrated_knots = np.asarray(payload["calibrated_knots"], dtype=float)
+        if pit_knots.ndim != 1 or calibrated_knots.ndim != 1:
+            raise ValueError("Distribution calibration knots must be 1D arrays.")
+        if len(pit_knots) != len(calibrated_knots):
+            raise ValueError("Distribution calibration knots must have matching lengths.")
+        if len(pit_knots) < 2:
+            raise ValueError("Distribution calibration knots must contain at least two points.")
+        if np.any(np.diff(pit_knots) < 0.0):
+            raise ValueError("Distribution calibration pit_knots must be sorted in ascending order.")
+        if np.any(np.diff(calibrated_knots) < 0.0):
+            raise ValueError("Distribution calibration calibrated_knots must be monotone nondecreasing.")
+        if np.any((pit_knots < 0.0) | (pit_knots > 1.0)):
+            raise ValueError("Distribution calibration pit_knots must lie in [0, 1].")
+        if np.any((calibrated_knots < 0.0) | (calibrated_knots > 1.0)):
+            raise ValueError("Distribution calibration calibrated_knots must lie in [0, 1].")
+        pit_knots, calibrated_knots = cls._compact_duplicate_knots(pit_knots, calibrated_knots)
+        if len(pit_knots) < 2:
+            raise ValueError("Distribution calibration knots must contain at least two distinct points.")
+        return cls(pit_knots=pit_knots, calibrated_knots=calibrated_knots)
+
+
+@dataclass
 class WeatherQuantileArtifact:
     """
     Persisted CatBoost model plus conformal calibration metadata.
@@ -869,6 +970,7 @@ class WeatherQuantileArtifact:
     block_cfg: Optional[BlockSplitConfig] = None
     cv_cfg: Optional[ExpandingWindowCVConfig] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    distribution_calibrator: Optional[DistributionCalibrator] = None
 
     def predict_quantiles(
         self,
@@ -923,6 +1025,15 @@ class WeatherQuantileArtifact:
             out[f"interval_{pct}_upper"] = upper
         return out
 
+    def calibrate_pit_values(self, pit_values: ArrayLike) -> ArrayLike:
+        """
+        Apply the optional distribution calibration to PIT values.
+        """
+        pit = np.asarray(pit_values, dtype=float)
+        if self.distribution_calibrator is None:
+            return pit
+        return self.distribution_calibrator.transform(pit)
+
     def save(self, artifact_dir: str | Path) -> Path:
         """
         Save the CatBoost model to ``model.cbm`` and metadata to
@@ -957,6 +1068,11 @@ class WeatherQuantileArtifact:
                 for alpha, correction in self.calibrator.result_.alpha_to_correction.items()
             },
             "metadata": self.metadata,
+            "distribution_calibration": (
+                self.distribution_calibrator.to_dict()
+                if self.distribution_calibrator is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -979,6 +1095,7 @@ class WeatherQuantileArtifact:
             float(alpha): float(correction)
             for alpha, correction in payload.get("calibration_corrections", {}).items()
         }
+        distribution_calibration_payload = payload.get("distribution_calibration")
 
         if set(calibration_corrections) != set(interval_alphas):
             raise ValueError("calibration_corrections must match interval_alphas.")
@@ -986,6 +1103,9 @@ class WeatherQuantileArtifact:
 
         calibrator = ConformalCalibrator(model_cfg.quantiles)
         calibrator.result_.alpha_to_correction = calibration_corrections
+        distribution_calibrator = None
+        if distribution_calibration_payload is not None:
+            distribution_calibrator = DistributionCalibrator.from_dict(distribution_calibration_payload)
 
         return cls(
             model=model,
@@ -997,6 +1117,7 @@ class WeatherQuantileArtifact:
             block_cfg=block_cfg,
             cv_cfg=cv_cfg,
             metadata=dict(payload.get("metadata", {})),
+            distribution_calibrator=distribution_calibrator,
         )
 
 
@@ -1318,6 +1439,7 @@ class WeatherQuantilePipeline:
     def build_artifact(
         self,
         metadata: Optional[Dict[str, Any]] = None,
+        distribution_calibrator: Optional[DistributionCalibrator] = None,
     ) -> WeatherQuantileArtifact:
         """
         Build a persisted artifact bundle from the fitted pipeline.
@@ -1337,6 +1459,7 @@ class WeatherQuantilePipeline:
             block_cfg=self.block_cfg,
             cv_cfg=self.cv_cfg,
             metadata=artifact_metadata,
+            distribution_calibrator=distribution_calibrator,
         )
 
     def save_artifact(
@@ -1345,11 +1468,15 @@ class WeatherQuantilePipeline:
         metadata: Optional[Dict[str, Any]] = None,
         metrics: Optional[Dict[str, Any]] = None,
         phase_name: Optional[str] = None,
+        distribution_calibrator: Optional[DistributionCalibrator] = None,
     ) -> Path:
         """
         Save the fitted pipeline as a CatBoost plus JSON artifact bundle.
         """
-        artifact = self.build_artifact(metadata=metadata)
+        artifact = self.build_artifact(
+            metadata=metadata,
+            distribution_calibrator=distribution_calibrator,
+        )
         if phase_name is None:
             return artifact.save(output_dir)
 

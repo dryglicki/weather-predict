@@ -15,9 +15,13 @@ import pandas as pd
 from predictor import (
     DatasetConfig,
     BlockSplitConfig,
+    ConformalCalibrator,
+    DistributionCalibrator,
     ExpandingWindowCVConfig,
     KMIA_FEATURE_COLUMNS,
     QuantileModelConfig,
+    WeatherQuantileArtifact,
+    WeatherQuantileModel,
     WeatherQuantilePipeline,
     build_phase_artifact_metrics,
     build_artifact_version_name,
@@ -334,6 +338,79 @@ class KMIASmokeTests(unittest.TestCase):
 
             loaded = type(artifact).load(artifact_dir)
             self.assertEqual(sorted(loaded.calibrator.result_.alpha_to_correction), [0.1, 0.2, 0.4, 0.5, 0.6, 0.8])
+
+    def test_distribution_calibrator_round_trip(self) -> None:
+        pit_values = np.array([0.02, 0.05, 0.11, 0.18, 0.24, 0.63, 0.79, 0.92, 0.97], dtype=float)
+        calibrator = DistributionCalibrator.fit(pit_values, n_knots=5)
+
+        self.assertTrue(np.all(np.diff(calibrator.pit_knots) >= 0.0))
+        self.assertTrue(np.all(np.diff(calibrator.calibrated_knots) >= 0.0))
+
+        mapped = calibrator.transform(np.array([0.02, 0.50, 0.98], dtype=float))
+        self.assertTrue(np.all(mapped >= 0.0))
+        self.assertTrue(np.all(mapped <= 1.0))
+
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=4, freq="D"),
+                "x": [0.0, 1.0, 2.0, 3.0],
+                "y": [0.0, 0.5, 1.5, 3.0],
+            }
+        )
+        train_df = df.iloc[:3].copy()
+        val_df = df.iloc[3:].copy()
+
+        dataset_cfg = DatasetConfig(
+            date_col="date",
+            target_col="y",
+            feature_cols=("x",),
+            categorical_cols=None,
+        )
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        model = WeatherQuantileModel(dataset_cfg=dataset_cfg, model_cfg=model_cfg)
+        model.fit(train_df, val_df)
+        conformal_calibrator = ConformalCalibrator(model_cfg.quantiles)
+        conformal_calibrator.fit_interval(
+            y_true=val_df["y"].to_numpy(),
+            pred_matrix=model.predict_quantiles(val_df, repair_crossing=True),
+            alpha=0.10,
+        )
+
+        artifact = WeatherQuantileArtifact(
+            model=model.model,
+            calibrator=conformal_calibrator,
+            dataset_cfg=dataset_cfg,
+            model_cfg=model_cfg,
+            feature_cols=["x"],
+            interval_alphas=[0.10],
+            distribution_calibrator=calibrator,
+            metadata={"run_name": "distribution_calibration_round_trip"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "kmia_artifact"
+            artifact.save(artifact_dir)
+
+            payload = json.loads((artifact_dir / "artifact.json").read_text(encoding="utf-8"))
+            self.assertIn("distribution_calibration", payload)
+
+            loaded = type(artifact).load(artifact_dir)
+            self.assertIsNotNone(loaded.distribution_calibrator)
+            loaded_mapped = loaded.distribution_calibrator.transform(np.array([0.02, 0.50, 0.98], dtype=float))
+            np.testing.assert_allclose(loaded_mapped, mapped)
+            np.testing.assert_allclose(
+                loaded.calibrate_pit_values(np.array([0.02, 0.50, 0.98], dtype=float)),
+                mapped,
+            )
 
     def test_artifact_load_rejects_missing_correction_for_interval(self) -> None:
         df = load_kmia_training_data(DATA_PATH)
