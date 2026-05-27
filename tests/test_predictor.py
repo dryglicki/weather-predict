@@ -104,6 +104,7 @@ class KMIATrainingDataTests(unittest.TestCase):
         self.assertIn("def build_parser() -> argparse.ArgumentParser:", source)
         self.assertIn("def main(argv: Optional[Sequence[str]] = None) -> int:", source)
         self.assertIn("run_kmia_smoke_test(", source)
+        self.assertIn('n_trials=30,  # phase 2 gets a larger retune budget', source)
         self.assertIn('raise SystemExit(main())', source)
         self.assertNotIn('pd.read_parquet("station_temperature_features.parquet")', source)
 
