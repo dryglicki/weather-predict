@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from predictor import (
     ExpandingWindowCVConfig,
@@ -81,6 +82,25 @@ class CompareCalibrationMatrixTests(unittest.TestCase):
         self.assertAlmostEqual(summary["pit_ks_stat"], 1.0 / 3.0, places=6)
         self.assertAlmostEqual(summary["pit_reduced_chi2"], 7.0 / 9.0, places=6)
         self.assertAlmostEqual(summary["rank_reduced_chi2"], 1.0 / 3.0, places=6)
+
+    def test_compute_interval_metrics_reports_coverage_and_width(self) -> None:
+        from compare_calibration_matrix import compute_interval_metrics
+
+        pred_df = pd.DataFrame(
+            {
+                "q_0.050": [80.0, 80.0],
+                "q_0.500": [90.0, 90.0],
+                "q_0.950": [100.0, 100.0],
+            }
+        )
+        y_true = np.array([85.0, 95.0], dtype=float)
+
+        metrics = compute_interval_metrics(y_true, pred_df, [0.10])
+
+        self.assertIn("coverage_90", metrics)
+        self.assertIn("width_90", metrics)
+        self.assertAlmostEqual(metrics["coverage_90"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["width_90"], 20.0, places=6)
 
     def test_compute_figure_size_scales_with_run_count(self) -> None:
         from compare_calibration_matrix import compute_figure_size

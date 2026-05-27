@@ -15,7 +15,13 @@ import pandas as pd
 from scipy import stats
 
 from plot_calibration import compute_calibrated_pit_values, compute_rank_values, rank_labels_from_quantiles
-from predictor import TimeBlockManager, WeatherQuantileArtifact, load_kmia_training_data
+from predictor import (
+    TimeBlockManager,
+    WeatherQuantileArtifact,
+    empirical_interval_coverage,
+    interval_width,
+    load_kmia_training_data,
+)
 
 
 PIT_BIN_COUNT = 10
@@ -138,6 +144,40 @@ def compute_histogram_summary(
     return summary
 
 
+def compute_interval_metrics(
+    y_true: np.ndarray,
+    pred_df: pd.DataFrame,
+    interval_alphas: Sequence[float],
+) -> dict[str, float]:
+    """
+    Compute coverage and width metrics for each supported central interval.
+    """
+    y = np.asarray(y_true, dtype=float)
+    if y.ndim != 1:
+        raise ValueError("y_true must be a 1D array.")
+    if len(y) == 0:
+        raise ValueError("y_true must not be empty.")
+
+    metrics: dict[str, float] = {}
+    for alpha in interval_alphas:
+        pct = int(round((1.0 - float(alpha)) * 100))
+        lower_col = f"interval_{pct}_lower"
+        upper_col = f"interval_{pct}_upper"
+        if lower_col in pred_df.columns and upper_col in pred_df.columns:
+            lower = pred_df[lower_col].to_numpy(dtype=float)
+            upper = pred_df[upper_col].to_numpy(dtype=float)
+        else:
+            q_lo = float(alpha) / 2.0
+            q_hi = 1.0 - float(alpha) / 2.0
+            lower = pred_df[f"q_{q_lo:.3f}"].to_numpy(dtype=float)
+            upper = pred_df[f"q_{q_hi:.3f}"].to_numpy(dtype=float)
+
+        metrics[f"coverage_{pct}"] = empirical_interval_coverage(y, lower, upper)
+        metrics[f"width_{pct}"] = interval_width(lower, upper)
+
+    return metrics
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compare multiple KMIA calibration runs.")
     parser.add_argument(
@@ -166,6 +206,7 @@ def _load_run_diagnostics(spec: RunSpec, df: pd.DataFrame) -> RunDiagnostics:
     pit_values = compute_calibrated_pit_values(y_true, pred_df, artifact.distribution_calibrator)
     rank_values = compute_rank_values(y_true, pred_df)
     summary = compute_histogram_summary(pit_values, rank_values, rank_bin_count=len(artifact.model_cfg.quantiles) + 1)
+    summary.update(compute_interval_metrics(y_true, pred_df, artifact.interval_alphas))
 
     return RunDiagnostics(
         spec=spec,
@@ -183,6 +224,21 @@ def _format_summary_value(value: float | int) -> str:
     return f"{value:.4f}"
 
 
+def _interval_summary_columns(run_results: Sequence[RunDiagnostics]) -> list[str]:
+    pct_values: set[int] = set()
+    for run in run_results:
+        for key in run.summary:
+            if key.startswith("coverage_"):
+                pct_values.add(int(key.split("_", 1)[1]))
+            elif key.startswith("width_"):
+                pct_values.add(int(key.split("_", 1)[1]))
+
+    columns: list[str] = []
+    for pct in sorted(pct_values, reverse=True):
+        columns.extend([f"coverage_{pct}", f"width_{pct}"])
+    return columns
+
+
 def _render_summary_table(ax: plt.Axes, run_results: Sequence[RunDiagnostics]) -> None:
     ax.axis("off")
     columns = [
@@ -196,6 +252,7 @@ def _render_summary_table(ax: plt.Axes, run_results: Sequence[RunDiagnostics]) -
         "pit_reduced_chi2",
         "rank_reduced_chi2",
     ]
+    columns.extend(_interval_summary_columns(run_results))
     cell_text = [
         [
             run.spec.label,
@@ -207,6 +264,10 @@ def _render_summary_table(ax: plt.Axes, run_results: Sequence[RunDiagnostics]) -
             _format_summary_value(run.summary["pit_ks_stat"]),
             _format_summary_value(run.summary["pit_reduced_chi2"]),
             _format_summary_value(run.summary["rank_reduced_chi2"]),
+            *[
+                _format_summary_value(run.summary[column])
+                for column in _interval_summary_columns(run_results)
+            ],
         ]
         for run in run_results
     ]
@@ -259,7 +320,7 @@ def build_comparison_figure(run_results: Sequence[RunDiagnostics]) -> plt.Figure
     summary_ax = fig.add_subplot(grid[n_runs, :])
     _render_summary_table(summary_ax, run_results)
     fig.suptitle("KMIA calibration matrix", y=0.995)
-    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.985])
+    fig.subplots_adjust(top=0.96, bottom=0.04, left=0.05, right=0.995)
     return fig
 
 
