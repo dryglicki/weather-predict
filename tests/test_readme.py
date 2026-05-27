@@ -10,5 +10,6 @@ class ReadmeTests(unittest.TestCase):
 
         self.assertIn("--distribution-calibration", source)
         self.assertIn("--artifact-dir", source)
+        self.assertIn("--interval-calibration", source)
+        self.assertIn("--pit-calibration", source)
         self.assertIn("raw vs calibrated pit", source)
-
