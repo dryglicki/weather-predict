@@ -1008,6 +1008,8 @@ class WeatherQuantileArtifact:
         """
         Predict a conformalized central interval.
         """
+        if self.calibrator is None:
+            raise RuntimeError("Interval calibration is disabled for this artifact.")
         pred_matrix = self.predict_quantiles(df, repair_crossing=True)
         return self.calibrator.predict_interval(pred_matrix, alpha)
 
@@ -1018,11 +1020,12 @@ class WeatherQuantileArtifact:
         for j, q in enumerate(self.model_cfg.quantiles):
             out[f"q_{q:.3f}"] = pred_matrix[:, j]
 
-        for alpha in self.interval_alphas:
-            lower, upper = self.calibrator.predict_interval(pred_matrix, alpha)
-            pct = int(round((1.0 - alpha) * 100))
-            out[f"interval_{pct}_lower"] = lower
-            out[f"interval_{pct}_upper"] = upper
+        if self.calibrator is not None:
+            for alpha in self.interval_alphas:
+                lower, upper = self.calibrator.predict_interval(pred_matrix, alpha)
+                pct = int(round((1.0 - alpha) * 100))
+                out[f"interval_{pct}_lower"] = lower
+                out[f"interval_{pct}_upper"] = upper
         return out
 
     def calibrate_pit_values(self, pit_values: ArrayLike) -> ArrayLike:
@@ -1054,6 +1057,14 @@ class WeatherQuantileArtifact:
         return artifact_path
 
     def _to_json_payload(self) -> Dict[str, Any]:
+        calibration_corrections = (
+            {
+                str(alpha): float(correction)
+                for alpha, correction in self.calibrator.result_.alpha_to_correction.items()
+            }
+            if self.calibrator is not None
+            else {}
+        )
         return {
             "format_version": 1,
             "model_file": "model.cbm",
@@ -1063,10 +1074,8 @@ class WeatherQuantileArtifact:
             "model_cfg": asdict(self.model_cfg),
             "feature_cols": list(self.feature_cols),
             "interval_alphas": [float(alpha) for alpha in self.interval_alphas],
-            "calibration_corrections": {
-                str(alpha): float(correction)
-                for alpha, correction in self.calibrator.result_.alpha_to_correction.items()
-            },
+            "interval_calibration_enabled": self.calibrator is not None,
+            "calibration_corrections": calibration_corrections,
             "metadata": self.metadata,
             "distribution_calibration": (
                 self.distribution_calibrator.to_dict()
@@ -1091,18 +1100,23 @@ class WeatherQuantileArtifact:
         cv_cfg = ExpandingWindowCVConfig(**payload["cv_cfg"]) if payload["cv_cfg"] is not None else None
         model_cfg = QuantileModelConfig(**payload["model_cfg"])
         interval_alphas = [float(alpha) for alpha in payload["interval_alphas"]]
+        interval_calibration_enabled = bool(payload.get("interval_calibration_enabled", True))
         calibration_corrections = {
             float(alpha): float(correction)
             for alpha, correction in payload.get("calibration_corrections", {}).items()
         }
         distribution_calibration_payload = payload.get("distribution_calibration")
 
-        if set(calibration_corrections) != set(interval_alphas):
-            raise ValueError("calibration_corrections must match interval_alphas.")
         validate_interval_quantiles(model_cfg.quantiles, interval_alphas)
 
-        calibrator = ConformalCalibrator(model_cfg.quantiles)
-        calibrator.result_.alpha_to_correction = calibration_corrections
+        calibrator = None
+        if interval_calibration_enabled:
+            if set(calibration_corrections) != set(interval_alphas):
+                raise ValueError("calibration_corrections must match interval_alphas.")
+            calibrator = ConformalCalibrator(model_cfg.quantiles)
+            calibrator.result_.alpha_to_correction = calibration_corrections
+        elif calibration_corrections:
+            raise ValueError("calibration_corrections must be empty when interval calibration is disabled.")
         distribution_calibrator = None
         if distribution_calibration_payload is not None:
             distribution_calibrator = DistributionCalibrator.from_dict(distribution_calibration_payload)
@@ -1280,6 +1294,7 @@ class WeatherQuantilePipeline:
         cv_cfg: ExpandingWindowCVConfig,
         model_cfg: QuantileModelConfig,
         interval_alphas: Optional[Sequence[float]] = None,
+        enable_interval_calibration: bool = True,
     ) -> None:
         self.dataset_cfg = dataset_cfg
         self.block_cfg = block_cfg
@@ -1287,6 +1302,7 @@ class WeatherQuantilePipeline:
         self.model_cfg = model_cfg
         self.interval_alphas = list(interval_alphas) if interval_alphas is not None else supported_interval_alphas(self.model_cfg.quantiles)
         validate_interval_quantiles(self.model_cfg.quantiles, self.interval_alphas)
+        self.enable_interval_calibration = enable_interval_calibration
 
         self.block_manager = TimeBlockManager(dataset_cfg, block_cfg)
 
@@ -1294,6 +1310,7 @@ class WeatherQuantilePipeline:
         self.best_model_cfg_: Optional[QuantileModelConfig] = None
         self.model_: Optional[WeatherQuantileModel] = None
         self.calibrator_: Optional[ConformalCalibrator] = None
+        self.distribution_calibrator_: Optional[DistributionCalibrator] = None
         self.predictions_: Dict[str, ArrayLike] = {}
         self.study_: Optional[optuna.study.Study] = None
 
@@ -1381,11 +1398,14 @@ class WeatherQuantilePipeline:
         self.predictions_["cal"] = pred_cal
         self.predictions_["test"] = pred_test
 
-        self.calibrator_ = ConformalCalibrator(final_cfg.quantiles)
-
-        y_cal = cal_df[self.dataset_cfg.target_col].to_numpy()
-        for alpha in self.interval_alphas:
-            self.calibrator_.fit_interval(y_cal, pred_cal, alpha)
+        if self.enable_interval_calibration:
+            self.calibrator_ = ConformalCalibrator(final_cfg.quantiles)
+            y_cal = cal_df[self.dataset_cfg.target_col].to_numpy()
+            for alpha in self.interval_alphas:
+                self.calibrator_.fit_interval(y_cal, pred_cal, alpha)
+        else:
+            self.calibrator_ = None
+        self.distribution_calibrator_ = None
 
     def evaluate_block(self, block_name: str) -> Dict[str, float]:
         """
@@ -1414,12 +1434,12 @@ class WeatherQuantilePipeline:
             quantiles=self.model_.model_cfg.quantiles,
         )
         metrics["crossing_rate_after_repair"] = 0.0
-
-        for alpha in self.interval_alphas:
-            lower, upper = self.calibrator_.predict_interval(pred_matrix, alpha)
-            pct = int(round((1.0 - alpha) * 100))
-            metrics[f"coverage_{pct}"] = empirical_interval_coverage(y_true, lower, upper)
-            metrics[f"width_{pct}"] = interval_width(lower, upper)
+        if self.calibrator_ is not None:
+            for alpha in self.interval_alphas:
+                lower, upper = self.calibrator_.predict_interval(pred_matrix, alpha)
+                pct = int(round((1.0 - alpha) * 100))
+                metrics[f"coverage_{pct}"] = empirical_interval_coverage(y_true, lower, upper)
+                metrics[f"width_{pct}"] = interval_width(lower, upper)
 
         return metrics
 
@@ -1444,10 +1464,13 @@ class WeatherQuantilePipeline:
         """
         Build a persisted artifact bundle from the fitted pipeline.
         """
-        if self.model_ is None or self.calibrator_ is None:
+        if self.model_ is None:
             raise RuntimeError("Pipeline has not been fit.")
 
         artifact_metadata = dict(metadata or {})
+        selected_distribution_calibrator = (
+            self.distribution_calibrator_ if distribution_calibrator is None else distribution_calibrator
+        )
 
         return WeatherQuantileArtifact(
             model=self.model_.model,
@@ -1459,7 +1482,7 @@ class WeatherQuantilePipeline:
             block_cfg=self.block_cfg,
             cv_cfg=self.cv_cfg,
             metadata=artifact_metadata,
-            distribution_calibrator=distribution_calibrator,
+            distribution_calibrator=selected_distribution_calibrator,
         )
 
     def save_artifact(

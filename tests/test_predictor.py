@@ -216,6 +216,74 @@ class FinalTrainingSplitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "final eval"):
             split_final_train_eval(dev_df, dataset_cfg, eval_days=3)
 
+    def test_pipeline_without_interval_calibration_omits_interval_columns(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(min_train_days=365, val_days=30, step_days=90, max_folds=1)
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=[0.10],
+            enable_interval_calibration=False,
+        )
+        pipeline.fit_final(df)
+
+        artifact = pipeline.build_artifact(metadata={"run_name": "no_interval"})
+        output_df = artifact.predict_output_frame(pipeline.blocks_["test"].head(5))
+
+        self.assertTrue(all(col.startswith("q_") for col in output_df.columns))
+        self.assertFalse(any(col.startswith("interval_") for col in output_df.columns))
+
+    def test_artifact_round_trip_without_interval_calibration(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(min_train_days=365, val_days=30, step_days=90, max_folds=1)
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=[0.10],
+            enable_interval_calibration=False,
+        )
+        pipeline.fit_final(df)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact_dir = Path(tmpdir) / "artifact"
+            artifact = pipeline.build_artifact(metadata={"run_name": "no_interval"})
+            artifact.save(artifact_dir)
+
+            payload = json.loads((artifact_dir / "artifact.json").read_text(encoding="utf-8"))
+            self.assertFalse(payload["interval_calibration_enabled"])
+            self.assertEqual(payload["calibration_corrections"], {})
+
+            loaded = type(artifact).load(artifact_dir)
+            self.assertIsNone(loaded.calibrator)
+
 
 class KMIASmokeTests(unittest.TestCase):
     def test_predictor_smoke_entrypoint_exits_zero_with_metrics(self) -> None:
