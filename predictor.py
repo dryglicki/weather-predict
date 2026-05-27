@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import subprocess
@@ -1622,6 +1623,8 @@ def build_phase2_config_from_phase1(phase1_cfg: QuantileModelConfig) -> Quantile
 def run_kmia_smoke_test(
     data_path: str | Path = "kalshiTraining_KMIA.dat",
     task_type: str = "CPU",
+    enable_interval_calibration: bool = True,
+    enable_pit_calibration: bool = False,
 ) -> Dict[str, Dict[str, float]]:
     """
     Run a small KMIA training smoke test.
@@ -1663,6 +1666,8 @@ def run_kmia_smoke_test(
         cv_cfg=cv_cfg,
         model_cfg=model_cfg,
         interval_alphas=[0.10],
+        enable_interval_calibration=enable_interval_calibration,
+        enable_pit_calibration=enable_pit_calibration,
     )
     pipeline.fit_final(df)
     return {
@@ -1680,6 +1685,8 @@ def run_phase(
     n_trials: int,
     study_name: str,
     interval_alphas: Optional[Sequence[float]] = None,
+    enable_interval_calibration: bool = True,
+    enable_pit_calibration: bool = False,
 ) -> WeatherQuantilePipeline:
     """
     Run one full phase: tune -> fit final -> evaluate.
@@ -1690,6 +1697,8 @@ def run_phase(
         cv_cfg=cv_cfg,
         model_cfg=model_cfg,
         interval_alphas=interval_alphas,
+        enable_interval_calibration=enable_interval_calibration,
+        enable_pit_calibration=enable_pit_calibration,
     )
 
     study = pipeline.tune(
@@ -1752,11 +1761,44 @@ def save_phase_artifact(
     )
 
 
-if __name__ == "__main__":
-    if "--smoke" in sys.argv:
-        smoke_metrics = run_kmia_smoke_test("kalshiTraining_KMIA.dat", task_type="CPU")
+def build_parser() -> argparse.ArgumentParser:
+    """
+    Build the KMIA training CLI parser.
+    """
+    parser = argparse.ArgumentParser(description="Train the KMIA quantile model.")
+    parser.add_argument("--smoke", action="store_true", help="Run the small smoke test instead of full training.")
+    parser.add_argument(
+        "--interval-calibration",
+        dest="interval_calibration",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable split-conformal interval calibration.",
+    )
+    parser.add_argument(
+        "--pit-calibration",
+        dest="pit_calibration",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable or disable PIT distribution calibration.",
+    )
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """
+    Run the KMIA training CLI.
+    """
+    args = build_parser().parse_args(argv)
+
+    if args.smoke:
+        smoke_metrics = run_kmia_smoke_test(
+            "kalshiTraining_KMIA.dat",
+            task_type="CPU",
+            enable_interval_calibration=args.interval_calibration,
+            enable_pit_calibration=args.pit_calibration,
+        )
         print("Smoke metrics:", smoke_metrics)
-        raise SystemExit(0)
+        return 0
 
     df = load_kmia_training_data("kalshiTraining_KMIA.dat")
     dataset_cfg = build_kmia_dataset_config()
@@ -1784,6 +1826,8 @@ if __name__ == "__main__":
         model_cfg=phase1_cfg,
         n_trials=25,
         study_name="phase1_coarse_quantiles",
+        enable_interval_calibration=args.interval_calibration,
+        enable_pit_calibration=args.pit_calibration,
     )
     phase1_path = save_phase_artifact(
         phase1_pipeline,
@@ -1808,6 +1852,8 @@ if __name__ == "__main__":
         model_cfg=phase2_cfg,
         n_trials=12,  # smaller retune is usually enough for phase 2
         study_name="phase2_denser_quantiles",
+        enable_interval_calibration=args.interval_calibration,
+        enable_pit_calibration=args.pit_calibration,
     )
     phase2_path = save_phase_artifact(
         phase2_pipeline,
@@ -1823,3 +1869,9 @@ if __name__ == "__main__":
     )
     print("\nTest quantile head:")
     print(test_quantiles.head())
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

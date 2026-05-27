@@ -29,6 +29,7 @@ from predictor import (
     build_kmia_dataset_config,
     build_phase1_config,
     build_phase2_config_from_phase1,
+    build_parser,
     load_kmia_training_data,
     run_kmia_smoke_test,
     supported_interval_alphas,
@@ -100,8 +101,10 @@ class KMIATrainingDataTests(unittest.TestCase):
         self.assertIn('load_kmia_training_data("kalshiTraining_KMIA.dat")', source)
         self.assertIn("dataset_cfg = build_kmia_dataset_config()", source)
         self.assertIn("block_cfg = build_default_kmia_block_split_config(df)", source)
-        self.assertIn('if "--smoke" in sys.argv:', source)
+        self.assertIn("def build_parser() -> argparse.ArgumentParser:", source)
+        self.assertIn("def main(argv: Optional[Sequence[str]] = None) -> int:", source)
         self.assertIn("run_kmia_smoke_test(", source)
+        self.assertIn('raise SystemExit(main())', source)
         self.assertNotIn('pd.read_parquet("station_temperature_features.parquet")', source)
 
 
@@ -344,6 +347,14 @@ class FinalTrainingSplitTests(unittest.TestCase):
 
 
 class KMIASmokeTests(unittest.TestCase):
+    def test_predictor_parser_exposes_calibration_toggles(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--no-interval-calibration", "--pit-calibration", "--smoke"])
+
+        self.assertFalse(args.interval_calibration)
+        self.assertTrue(args.pit_calibration)
+        self.assertTrue(args.smoke)
+
     def test_predictor_smoke_entrypoint_exits_zero_with_metrics(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
 
@@ -359,6 +370,27 @@ class KMIASmokeTests(unittest.TestCase):
         self.assertIn("Smoke metrics:", result.stdout)
         self.assertIn("'cal'", result.stdout)
         self.assertIn("'test'", result.stdout)
+
+    def test_predictor_smoke_entrypoint_can_disable_interval_and_enable_pit_calibration(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "predictor.py",
+                "--smoke",
+                "--no-interval-calibration",
+                "--pit-calibration",
+            ],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Smoke metrics:", result.stdout)
+        self.assertNotIn("coverage_90", result.stdout)
 
     def test_run_kmia_smoke_test_returns_cal_and_test_metrics(self) -> None:
         metrics = run_kmia_smoke_test(DATA_PATH, task_type="CPU")
