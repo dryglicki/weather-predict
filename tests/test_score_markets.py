@@ -12,6 +12,13 @@ import pandas as pd
 
 
 class ScoreMarketsCLITests(unittest.TestCase):
+    def _latest_phase2_artifact_dir(self) -> Path:
+        artifact_root = Path(__file__).resolve().parents[1] / "artifacts"
+        candidates = sorted(artifact_root.glob("phase2_denser_quantiles_*"))
+        if not candidates:
+            raise AssertionError("No phase2_denser_quantiles_* artifact directories found.")
+        return candidates[-1]
+
     def test_score_markets_cli_ranks_miami_style_contracts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             forecast_csv = Path(tmpdir) / "forecast.csv"
@@ -133,7 +140,7 @@ class ScoreMarketsCLITests(unittest.TestCase):
             output_csv = tmpdir_path / "scored.csv"
             artifact_dir = tmpdir_path / "artifact"
 
-            shutil.copytree(Path(__file__).resolve().parents[1] / "artifacts" / "phase2_denser_quantiles", artifact_dir)
+            shutil.copytree(self._latest_phase2_artifact_dir(), artifact_dir)
             payload_path = artifact_dir / "artifact.json"
             payload = json.loads(payload_path.read_text(encoding="utf-8"))
             payload["distribution_calibration"] = {

@@ -274,7 +274,7 @@ def _render_summary_table(ax: plt.Axes, run_results: Sequence[RunDiagnostics]) -
 
     table = ax.table(cellText=cell_text, colLabels=columns, cellLoc="center", loc="center")
     table.auto_set_font_size(False)
-    table.set_fontsize(8)
+    table.set_fontsize(7)
     table.scale(1.0, 1.25)
     ax.set_title("Summary metrics", pad=8)
 
@@ -296,7 +296,7 @@ def build_comparison_figure(run_results: Sequence[RunDiagnostics]) -> plt.Figure
         pit_bins = np.linspace(0.0, 1.0, PIT_BIN_COUNT + 1)
         pit_ax.hist(run.pit_values, bins=pit_bins, edgecolor="black")
         pit_ax.set_xlim(0.0, 1.0)
-        pit_ax.set_ylabel(run.spec.label, rotation=0, labelpad=36, va="center")
+        pit_ax.set_ylabel(run.spec.label, rotation=90, labelpad=20, va="center")
         pit_ax.set_xlabel("PIT value")
         if row_idx == 0:
             pit_ax.set_title(
@@ -313,7 +313,7 @@ def build_comparison_figure(run_results: Sequence[RunDiagnostics]) -> plt.Figure
         rank_ax.set_xlim(-0.5, rank_bin_count - 0.5)
         rank_ax.set_xlabel("Quantile interval")
         if row_idx == 0:
-            rank_ax.set_title("Quantile rank histogram")
+            rank_ax.set_title("Quantile rank histogram (raw quantiles)")
         rank_ax.set_xticks(np.arange(rank_bin_count))
         rank_ax.set_xticklabels(rank_labels_from_quantiles(run.quantiles), rotation=45, ha="right")
 
