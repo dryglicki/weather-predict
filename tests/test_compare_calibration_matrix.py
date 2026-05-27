@@ -102,6 +102,27 @@ class CompareCalibrationMatrixTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["coverage_90"], 1.0, places=6)
         self.assertAlmostEqual(metrics["width_90"], 20.0, places=6)
 
+    def test_compute_cdf_comparison_profile_reports_flatness_error(self) -> None:
+        from compare_calibration_matrix import compute_cdf_comparison_profile
+
+        pred_df = pd.DataFrame(
+            {
+                "q_0.050": [80.0, 80.0],
+                "q_0.500": [90.0, 90.0],
+                "q_0.950": [100.0, 100.0],
+            }
+        )
+        y_true = np.array([85.0, 95.0], dtype=float)
+        thresholds = np.array([84.0, 89.0, 94.0], dtype=float)
+
+        profile = compute_cdf_comparison_profile(y_true, pred_df, thresholds)
+
+        self.assertEqual(profile["thresholds"].tolist(), [84.0, 89.0, 94.0])
+        self.assertEqual(len(profile["predicted_cdf"]), 3)
+        self.assertEqual(len(profile["empirical_cdf"]), 3)
+        self.assertGreaterEqual(profile["cdf_mae"], 0.0)
+        self.assertGreaterEqual(profile["cdf_max_abs"], 0.0)
+
     def test_compute_figure_size_scales_with_run_count(self) -> None:
         from compare_calibration_matrix import compute_figure_size
 

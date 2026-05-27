@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from plot_calibration import compute_calibrated_pit_values, compute_rank_values, rank_labels_from_quantiles
+from plot_calibration import compute_calibrated_pit_values, compute_rank_values
+from market_scoring import build_cdf_from_quantiles
 from predictor import (
     TimeBlockManager,
     WeatherQuantileArtifact,
@@ -44,11 +45,14 @@ class RunDiagnostics:
     """
 
     spec: RunSpec
+    y_true: np.ndarray
+    pred_df: pd.DataFrame
     pit_values: np.ndarray
     rank_values: np.ndarray
     summary: dict[str, float | int]
     quantiles: Sequence[float]
     uses_distribution_calibration: bool
+    distribution_calibrator: object | None
 
 
 def parse_run_spec(token: str) -> RunSpec:
@@ -178,6 +182,62 @@ def compute_interval_metrics(
     return metrics
 
 
+def build_event_thresholds(y_values: np.ndarray, padding: int = 1) -> np.ndarray:
+    """
+    Build shared integer thresholds for settled-temperature CDF comparison.
+    """
+    y = np.asarray(y_values, dtype=float)
+    if y.ndim != 1:
+        raise ValueError("y_values must be a 1D array.")
+    if y.size == 0:
+        raise ValueError("y_values must not be empty.")
+    if padding < 0:
+        raise ValueError("padding must be non-negative.")
+
+    lower = int(np.floor(np.min(y))) - padding
+    upper = int(np.ceil(np.max(y))) + padding
+    return np.arange(lower, upper + 1, dtype=float)
+
+
+def compute_cdf_comparison_profile(
+    y_true: np.ndarray,
+    pred_df: pd.DataFrame,
+    thresholds: np.ndarray,
+    distribution_calibrator=None,
+) -> dict[str, np.ndarray | float]:
+    """
+    Compare average model CDF against the empirical CDF on shared thresholds.
+    """
+    y = np.asarray(y_true, dtype=float)
+    x = np.asarray(thresholds, dtype=float)
+    if y.ndim != 1 or x.ndim != 1:
+        raise ValueError("y_true and thresholds must be 1D arrays.")
+    if y.size == 0 or x.size == 0:
+        raise ValueError("y_true and thresholds must not be empty.")
+
+    cdf_funcs = [
+        build_cdf_from_quantiles(row, distribution_calibrator=distribution_calibrator)
+        for _, row in pred_df.iterrows()
+    ]
+    predicted_cdf = np.array(
+        [
+            float(np.mean([cdf(float(threshold) + 0.5) for cdf in cdf_funcs]))
+            for threshold in x
+        ],
+        dtype=float,
+    )
+    empirical_cdf = np.array([float(np.mean(y <= threshold)) for threshold in x], dtype=float)
+
+    diff = predicted_cdf - empirical_cdf
+    return {
+        "thresholds": x,
+        "predicted_cdf": predicted_cdf,
+        "empirical_cdf": empirical_cdf,
+        "cdf_mae": float(np.mean(np.abs(diff))),
+        "cdf_max_abs": float(np.max(np.abs(diff))),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compare multiple KMIA calibration runs.")
     parser.add_argument(
@@ -210,11 +270,14 @@ def _load_run_diagnostics(spec: RunSpec, df: pd.DataFrame) -> RunDiagnostics:
 
     return RunDiagnostics(
         spec=spec,
+        y_true=y_true,
+        pred_df=pred_df,
         pit_values=pit_values,
         rank_values=rank_values,
         summary=summary,
         quantiles=artifact.model_cfg.quantiles,
         uses_distribution_calibration=artifact.distribution_calibrator is not None,
+        distribution_calibrator=artifact.distribution_calibrator,
     )
 
 
@@ -251,6 +314,8 @@ def _render_summary_table(ax: plt.Axes, run_results: Sequence[RunDiagnostics]) -
         "pit_ks_stat",
         "pit_reduced_chi2",
         "rank_reduced_chi2",
+        "cdf_mae",
+        "cdf_max_abs",
     ]
     columns.extend(_interval_summary_columns(run_results))
     cell_text = [
@@ -264,6 +329,8 @@ def _render_summary_table(ax: plt.Axes, run_results: Sequence[RunDiagnostics]) -
             _format_summary_value(run.summary["pit_ks_stat"]),
             _format_summary_value(run.summary["pit_reduced_chi2"]),
             _format_summary_value(run.summary["rank_reduced_chi2"]),
+            _format_summary_value(run.summary["cdf_mae"]),
+            _format_summary_value(run.summary["cdf_max_abs"]),
             *[
                 _format_summary_value(run.summary[column])
                 for column in _interval_summary_columns(run_results)
@@ -288,10 +355,11 @@ def build_comparison_figure(run_results: Sequence[RunDiagnostics]) -> plt.Figure
     fig = plt.figure(figsize=(width, height))
     height_ratios = [1.0] * n_runs + [max(1.0, 0.45 * n_runs)]
     grid = fig.add_gridspec(nrows=n_runs + 1, ncols=2, height_ratios=height_ratios, hspace=0.8, wspace=0.3)
+    thresholds = build_event_thresholds(np.concatenate([run.y_true for run in run_results]))
 
     for row_idx, run in enumerate(run_results):
         pit_ax = fig.add_subplot(grid[row_idx, 0])
-        rank_ax = fig.add_subplot(grid[row_idx, 1])
+        cdf_ax = fig.add_subplot(grid[row_idx, 1])
 
         pit_bins = np.linspace(0.0, 1.0, PIT_BIN_COUNT + 1)
         pit_ax.hist(run.pit_values, bins=pit_bins, edgecolor="black")
@@ -303,19 +371,37 @@ def build_comparison_figure(run_results: Sequence[RunDiagnostics]) -> plt.Figure
                 "PIT histogram" if not run.uses_distribution_calibration else "PIT histogram (calibrated)"
             )
 
-        rank_bin_count = len(run.quantiles) + 1
-        rank_ax.hist(
-            run.rank_values,
-            bins=np.arange(-0.5, rank_bin_count + 0.5, 1.0),
-            edgecolor="black",
-            align="mid",
+        cdf_profile = compute_cdf_comparison_profile(
+            run.y_true,
+            run.pred_df,
+            thresholds,
+            distribution_calibrator=run.distribution_calibrator,
         )
-        rank_ax.set_xlim(-0.5, rank_bin_count - 0.5)
-        rank_ax.set_xlabel("Quantile interval")
+        run.summary["cdf_mae"] = float(cdf_profile["cdf_mae"])
+        run.summary["cdf_max_abs"] = float(cdf_profile["cdf_max_abs"])
+        cdf_ax.step(
+            cdf_profile["thresholds"],
+            cdf_profile["empirical_cdf"],
+            where="post",
+            color="black",
+            linewidth=1.5,
+            label="Empirical CDF" if row_idx == 0 else None,
+        )
+        cdf_ax.plot(
+            cdf_profile["thresholds"],
+            cdf_profile["predicted_cdf"],
+            color="tab:blue",
+            linewidth=1.5,
+            label=(
+                "Calibrated model CDF" if run.distribution_calibrator is not None else "Model CDF"
+            ) if row_idx == 0 else None,
+        )
+        cdf_ax.set_ylim(0.0, 1.05)
+        cdf_ax.set_xlabel("Settled integer temperature")
         if row_idx == 0:
-            rank_ax.set_title("Quantile rank histogram (raw quantiles)")
-        rank_ax.set_xticks(np.arange(rank_bin_count))
-        rank_ax.set_xticklabels(rank_labels_from_quantiles(run.quantiles), rotation=45, ha="right")
+            cdf_ax.set_title("Model CDF vs empirical CDF")
+            cdf_ax.legend(loc="lower right", fontsize=8)
+        cdf_ax.grid(True, alpha=0.2)
 
     summary_ax = fig.add_subplot(grid[n_runs, :])
     _render_summary_table(summary_ax, run_results)
