@@ -1076,6 +1076,7 @@ class WeatherQuantileArtifact:
             "interval_alphas": [float(alpha) for alpha in self.interval_alphas],
             "interval_calibration_enabled": self.calibrator is not None,
             "calibration_corrections": calibration_corrections,
+            "distribution_calibration_enabled": self.distribution_calibrator is not None,
             "metadata": self.metadata,
             "distribution_calibration": (
                 self.distribution_calibrator.to_dict()
@@ -1117,9 +1118,16 @@ class WeatherQuantileArtifact:
             calibrator.result_.alpha_to_correction = calibration_corrections
         elif calibration_corrections:
             raise ValueError("calibration_corrections must be empty when interval calibration is disabled.")
+        distribution_calibration_enabled = bool(
+            payload.get("distribution_calibration_enabled", distribution_calibration_payload is not None)
+        )
         distribution_calibrator = None
-        if distribution_calibration_payload is not None:
+        if distribution_calibration_enabled:
+            if distribution_calibration_payload is None:
+                raise ValueError("distribution_calibration must be present when distribution calibration is enabled.")
             distribution_calibrator = DistributionCalibrator.from_dict(distribution_calibration_payload)
+        elif distribution_calibration_payload is not None:
+            raise ValueError("distribution_calibration must be empty when distribution calibration is disabled.")
 
         return cls(
             model=model,
@@ -1156,6 +1164,25 @@ def evaluate_quantile_predictions(
     metrics["n_crossing_rows_raw"] = float(count_crossings(pred_matrix_raw))
     metrics["crossing_rate_raw"] = float(count_crossings(pred_matrix_raw) / len(y_true))
     return metrics
+
+
+def compute_raw_pit_values(
+    y_true: ArrayLike,
+    pred_matrix: ArrayLike,
+    quantiles: Sequence[float],
+) -> ArrayLike:
+    """
+    Compute raw PIT values from repaired quantile predictions.
+    """
+    y_arr = np.asarray(y_true, dtype=float)
+    pred_arr = np.asarray(pred_matrix, dtype=float)
+    q_values = np.asarray(quantiles, dtype=float)
+    pit_values = np.empty(len(y_arr), dtype=float)
+
+    for i, row in enumerate(pred_arr):
+        pit_values[i] = float(np.interp(float(y_arr[i]), row, q_values, left=0.0, right=1.0))
+
+    return pit_values
 
 
 def summarize_fold_metrics(fold_metrics: List[Dict[str, float]]) -> Dict[str, float]:
@@ -1295,6 +1322,7 @@ class WeatherQuantilePipeline:
         model_cfg: QuantileModelConfig,
         interval_alphas: Optional[Sequence[float]] = None,
         enable_interval_calibration: bool = True,
+        enable_pit_calibration: bool = False,
     ) -> None:
         self.dataset_cfg = dataset_cfg
         self.block_cfg = block_cfg
@@ -1303,6 +1331,7 @@ class WeatherQuantilePipeline:
         self.interval_alphas = list(interval_alphas) if interval_alphas is not None else supported_interval_alphas(self.model_cfg.quantiles)
         validate_interval_quantiles(self.model_cfg.quantiles, self.interval_alphas)
         self.enable_interval_calibration = enable_interval_calibration
+        self.enable_pit_calibration = enable_pit_calibration
 
         self.block_manager = TimeBlockManager(dataset_cfg, block_cfg)
 
@@ -1405,7 +1434,12 @@ class WeatherQuantilePipeline:
                 self.calibrator_.fit_interval(y_cal, pred_cal, alpha)
         else:
             self.calibrator_ = None
-        self.distribution_calibrator_ = None
+        if self.enable_pit_calibration:
+            y_cal = cal_df[self.dataset_cfg.target_col].to_numpy()
+            pit_values = compute_raw_pit_values(y_cal, pred_cal, final_cfg.quantiles)
+            self.distribution_calibrator_ = DistributionCalibrator.fit(pit_values)
+        else:
+            self.distribution_calibrator_ = None
 
     def evaluate_block(self, block_name: str) -> Dict[str, float]:
         """

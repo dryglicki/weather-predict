@@ -284,6 +284,64 @@ class FinalTrainingSplitTests(unittest.TestCase):
             loaded = type(artifact).load(artifact_dir)
             self.assertIsNone(loaded.calibrator)
 
+    def test_pipeline_fits_distribution_calibrator_when_enabled(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(min_train_days=365, val_days=30, step_days=90, max_folds=1)
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=[0.10],
+            enable_pit_calibration=True,
+        )
+        pipeline.fit_final(df)
+
+        self.assertIsNotNone(pipeline.distribution_calibrator_)
+
+        artifact = pipeline.build_artifact(metadata={"run_name": "pit_enabled"})
+        self.assertIsNotNone(artifact.distribution_calibrator)
+
+    def test_build_artifact_defaults_to_pipeline_distribution_calibrator(self) -> None:
+        df = load_kmia_training_data(DATA_PATH)
+        dataset_cfg = build_kmia_dataset_config()
+        block_cfg = build_default_kmia_block_split_config(df)
+        cv_cfg = ExpandingWindowCVConfig(min_train_days=365, val_days=30, step_days=90, max_folds=1)
+        model_cfg = QuantileModelConfig(
+            quantiles=[0.05, 0.50, 0.95],
+            iterations=5,
+            learning_rate=0.1,
+            depth=4,
+            random_seed=42,
+            verbose=0,
+            early_stopping_rounds=2,
+            task_type="CPU",
+        )
+        pipeline = WeatherQuantilePipeline(
+            dataset_cfg=dataset_cfg,
+            block_cfg=block_cfg,
+            cv_cfg=cv_cfg,
+            model_cfg=model_cfg,
+            interval_alphas=[0.10],
+            enable_pit_calibration=True,
+        )
+        pipeline.fit_final(df)
+
+        artifact = pipeline.build_artifact(metadata={"run_name": "pit_enabled"})
+        self.assertIsNotNone(artifact.distribution_calibrator)
+
 
 class KMIASmokeTests(unittest.TestCase):
     def test_predictor_smoke_entrypoint_exits_zero_with_metrics(self) -> None:
