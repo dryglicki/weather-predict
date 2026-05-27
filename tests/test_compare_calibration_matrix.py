@@ -40,6 +40,31 @@ class CompareCalibrationMatrixTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_run_specs(["/tmp/run_a"])
 
+    def test_build_parser_accepts_multiple_run_tokens_after_one_flag(self) -> None:
+        from compare_calibration_matrix import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--runs",
+                "artifacts/run_a,base",
+                "artifacts/run_b,interval",
+                "--data",
+                "kalshiTraining_KMIA.dat",
+                "--output",
+                "comparison.png",
+            ]
+        )
+
+        self.assertEqual(
+            args.runs,
+            [
+                "artifacts/run_a,base",
+                "artifacts/run_b,interval",
+            ],
+        )
+        self.assertEqual(args.data, "kalshiTraining_KMIA.dat")
+        self.assertEqual(args.output, "comparison.png")
+
     def test_compute_histogram_summary_reports_flatness_metrics(self) -> None:
         from compare_calibration_matrix import compute_histogram_summary
 

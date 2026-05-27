@@ -142,9 +142,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Compare multiple KMIA calibration runs.")
     parser.add_argument(
         "--runs",
-        action="append",
+        nargs="+",
+        action="extend",
         required=True,
-        help="Repeated artifact_dir,label entries, for example artifacts/run_a,base.",
+        help="One or more artifact_dir,label entries, for example artifacts/run_a,base.",
     )
     parser.add_argument("--data", required=True, help="Raw KMIA CSV used to reconstruct the held-out test block.")
     parser.add_argument("--output", required=True, help="Output PNG path.")
